@@ -263,12 +263,11 @@ Derived from FileHandle.pm by Graham Barr E<lt>F<gbarr@pobox.com>E<gt>
 use 5.006_001;
 use strict;
 our($VERSION, @EXPORT_OK, @ISA);
-use Carp;
-use Symbol;
-use SelectSaver;
+use Symbol ();
+use SelectSaver ();
 use IO ();	# Load the XS module
+use Exporter   ();  # not a require because we want it to happen before INIT
 
-require Exporter;
 @ISA = qw(Exporter);
 
 $VERSION = "1.37";
@@ -306,6 +305,11 @@ $VERSION = eval $VERSION;
     _IONBF
 );
 
+BEGIN {
+    sub croak($) { require Carp; Carp::croak(@_) }
+    sub carp($) { require Carp; Carp::carp(@_) }
+}
+
 ################################################
 ## Constructors, destructors.
 ##
@@ -324,14 +328,14 @@ sub new {
 	}
 	croak "usage: $class->new()";
     }
-    my $io = gensym;
+    my $io = Symbol::gensym;
     bless $io, $class;
 }
 
 sub new_from_fd {
     my $class = ref($_[0]) || $_[0] || "IO::Handle";
     @_ == 3 or croak "usage: $class->new_from_fd(FD, MODE)";
-    my $io = gensym;
+    my $io = Symbol::gensym;
     shift;
     IO::Handle::fdopen($io, @_)
 	or return undef;
@@ -368,7 +372,7 @@ sub fdopen {
 
     if (ref($fd) && "$fd" =~ /GLOB\(/o) {
 	# It's a glob reference; Alias it as we cannot get name of anon GLOBs
-	my $n = qualify(*GLOB);
+	my $n = Symbol::qualify(*GLOB);
 	*GLOB = *{*$fd};
 	$fd =  $n;
     } elsif ($fd =~ m#^\d+$#) {
@@ -526,7 +530,7 @@ sub input_record_separator {
 
 sub input_line_number {
     local $.;
-    () = tell qualify($_[0], caller) if ref($_[0]);
+    () = tell Symbol::qualify($_[0], caller) if ref($_[0]);
     my $prev = $.;
     $. = $_[1] if @_ > 1;
     $prev;
@@ -601,7 +605,7 @@ sub format_write {
     @_ < 3 || croak 'usage: $io->write( [FORMAT_NAME] )';
     if (@_ == 2) {
 	my ($io, $fmt) = @_;
-	my $oldfmt = $io->format_name(qualify($fmt,caller));
+	my $oldfmt = $io->format_name(Symbol::qualify($fmt,caller));
 	CORE::write($io);
 	$io->format_name($oldfmt);
     } else {
