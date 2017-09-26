@@ -1941,6 +1941,7 @@ A+(*PRUNE)BC(?{})	AAABC	y	$&	AAABC
 /w\z\R\z/i	\x{100}a\x{80}a	n	-	-
 
 /(a+){1}+a/	aaa	n	-	-		# [perl #125825]
+[\0\N{U+.}	aaa	c	-	Unmatched [ in regex; marked by <-- HERE in m/\[ <-- HERE \\0\\N{U+.}/	# [perl #132163]
 
 ^((?(?=x)xb|ya)z)	xbz	y	$1	xbz
 ^((?(?=x)xb|ya)z)	yaz	y	$1	yaz
