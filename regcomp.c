@@ -628,7 +628,7 @@ static const scan_data_t zero_scan_data = {
     UTF8fARG(UTF,                                                           \
              (xI(xC) > eC) /* Don't run off end */                          \
               ? eC - sC   /* Length before the <--HERE */                   \
-              : xI_offset(xC),                                              \
+              : ( xI_offset(xC) > 0 ? xI_offset(xC) : 0 ),                  \
              sC),         /* The input pattern printed up to the <--HERE */ \
     UTF8fARG(UTF,                                                           \
              (xI(xC) > eC) ? 0 : eC - xI(xC), /* Length after <--HERE */    \
@@ -12056,7 +12056,7 @@ S_grok_bslash_N(pTHX_ RExC_state_t *pRExC_state,
 
     endbrace = strchr(RExC_parse, '}');
     if (! endbrace) { /* no trailing brace */
-        vFAIL2("Missing right brace on \\%c{}", 'N');
+        vFAIL("Missing right brace on \\N{}");
     }
     else if(!(endbrace == RExC_parse		/* nothing between the {} */
               || (endbrace - RExC_parse >= 2	/* U+ (bad hex is checked... */
