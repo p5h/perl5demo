@@ -4,7 +4,7 @@ build_script:
 - cmd: >-
     set path=%path:C:\Program Files\Git\usr\bin=%
 
-    set path=%path%;C:\MinGW\bin
+    set path=%path%;C:\MinGW\bin;C:\Cygwin\bin
 
     gcc -v
 
