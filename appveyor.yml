@@ -10,6 +10,6 @@ build_script:
 
     cd win32
     
-    mingw32-make -j4 test_harness INST_TOP=C:\perl-blead CCHOME=C:\MinGW
+    mingw32-make INST_TOP=C:\perl-blead CCHOME=C:\MinGW
     
     mingw32-make test
