@@ -1,0 +1,17 @@
+version: 5.27.0.{build}
+install:
+build_script:
+- cmd: >-
+    set path=%path:C:\Program Files\Git\usr\bin=%
+
+    set path=%path%;C:\MinGW\bin
+
+    gcc -v
+
+    perl -v
+
+    sh Configure -des -Dusedevel -Uversiononly -Dcc=gcc -Dusethreads -Dprefix=C:/perl-blead -DDEBUGGING 
+    
+    mingw32-make -j4 test_harness
+    
+    mingw32-make test
