@@ -8,10 +8,8 @@ build_script:
 
     gcc -v
 
-    perl -v
-
-    sh Configure -des -Dusedevel -Uversiononly -Dcc=gcc -Dusethreads -Dprefix=C:/perl-blead -DDEBUGGING 
+    cd win32
     
-    mingw32-make -j4 test_harness
+    mingw32-make -j4 test_harness INST_TOP=C:\perl-blead CCHOME=C:\MinGW
     
     mingw32-make test
