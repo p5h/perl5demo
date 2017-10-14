@@ -13,6 +13,7 @@ BEGIN {
     @INC = qw(lib Porting t);
     require 'test.pl';
     skip_all("pre-computed SHA1 won't match under EBCDIC") if $::IS_EBCDIC;
+    skip_all("This distro may have modified some files in cpan/. Skipping validation.") if $ENV{'PERL_CPAN_DISTRO_IS_PATCHED'};
 }
 
 use strict;
