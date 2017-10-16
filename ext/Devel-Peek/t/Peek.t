@@ -17,6 +17,7 @@ use Test::More;
 
 use Devel::Peek;
 
+our $COW3 = ($Config{ccflags} =~ /PERL_COPY_ON_WRITE3\b/);
 our $DEBUG = 0;
 open(SAVERR, ">&STDERR") or die "Can't dup STDERR: $!";
 
@@ -88,12 +89,24 @@ sub do_test {
 	    $pattern =~ s/\$RV/
 		($] < 5.011) ? 'RV' : 'IV';
 	    /mge;
-	    $pattern =~ s/^\h+COW_REFCNT = .*\n//mg
+	    $pattern =~ s/^\h+COW_ = .*\n//mg
 		if $Config{ccflags} =~
 			/-DPERL_(?:OLD_COPY_ON_WRITE|NO_COW)\b/
 			    || $] < 5.019003;
+
+            if ($COW3) {
+                #warn "XXX pat=[$pattern]\n" if ($pattern =~ /COW_REFCNT/);
+                $pattern =~ s/(\bIsCOW\b)/($1|SHORTPV)/mg;
+                $pattern =~ s/(\bPOK,)/$1(SHORTPV,)?/mg;
+                $pattern =~ s/^(\s+COW_REFCNT = .*\n)/($1)\?/mg;
+                $pattern =~ s/^(\s+LEN = \\d\+\n?)/($1)\?/mg;
+            }
+
 	    print $pattern, "\n" if $DEBUG;
 	    my ($dump, $dump2) = split m/\*\*\*\*\*\n/, scalar <IN>;
+
+
+
 	    print $dump, "\n"    if $DEBUG;
 	    like( $dump, qr/\A$pattern\Z/ms, $_[0])
 	      or note("line " . (caller)[2]);
@@ -130,8 +143,10 @@ do_test('assignment of immediate constant (string)',
   PV = $ADDR "foo"\\\0
   CUR = 3
   LEN = \\d+
+(?:  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 1
-');
+)?');
 
 do_test('immediate constant (string)',
         "bar",
@@ -142,6 +157,8 @@ do_test('immediate constant (string)',
   PV = $ADDR "bar"\\\0
   CUR = 3
   LEN = \\d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 0
 ');
 
@@ -186,10 +203,11 @@ do_test('floating point value',
        $d,
        $] < 5.019003
         || $Config{ccflags} =~ /-DPERL_(?:NO_COW|OLD_COPY_ON_WRITE)\b/
+        || $COW3
        ?
 'SV = PVNV\\($ADDR\\) at $ADDR
   REFCNT = 1
-  FLAGS = \\(NOK,pNOK\\)
+  FLAGS = \\(NOK,(SHORTPV,)?pNOK\\)
   IV = \d+
   NV = 789\\.(?:1(?:000+\d+)?|0999+\d+)
   PV = $ADDR "789"\\\0
@@ -231,8 +249,10 @@ do_test('reference to scalar',
     PV = $ADDR "foo"\\\0
     CUR = 3
     LEN = \\d+
+(?:    COW_META = $ADDR
+    COW_FLAGS = $ADDR
     COW_REFCNT = 1
-');
+)?');
 
 my $c_pattern;
 if ($type eq 'N') {
@@ -344,6 +364,7 @@ do_test('reference to named subroutine without prototype',
        \\d+\\. $ADDR<\\d+> \\(\\d+,\\d+\\) "\\$pattern"
        \\d+\\. $ADDR<\\d+> \\(\\d+,\\d+\\) "\\$do_eval"
       \\d+\\. $ADDR<\\d+> \\(\\d+,\\d+\\) "\\$sub"
+      \\d+\\. $ADDR<\\d+> FAKE "\\$COW3" flags=0x0 index=0
       \\d+\\. $ADDR<\\d+> FAKE "\\$DEBUG" flags=0x0 index=0
       \\d+\\. $ADDR<\\d+> \\(\\d+,\\d+\\) "\\$dump"
       \\d+\\. $ADDR<\\d+> \\(\\d+,\\d+\\) "\\$dump2"
@@ -494,6 +515,8 @@ do_test('string with Unicode',
   PV = $ADDR "\\\214\\\101\\\0\\\235\\\101"\\\0 \[UTF8 "\\\x\{100\}\\\x\{0\}\\\x\{200\}"\]
   CUR = 5
   LEN = \\d+
+  COW_META = $ADDR					# $] < 5.019007
+  COW_FLAGS = $ADDR					# $] < 5.019007
   COW_REFCNT = 1					# $] < 5.019007
 ');
 } else {
@@ -506,6 +529,8 @@ do_test('string with Unicode',
   PV = $ADDR "\\\304\\\200\\\0\\\310\\\200"\\\0 \[UTF8 "\\\x\{100\}\\\x\{0\}\\\x\{200\}"\]
   CUR = 5
   LEN = \\d+
+  COW_META = $ADDR					# $] < 5.019007
+  COW_FLAGS = $ADDR					# $] < 5.019007
   COW_REFCNT = 1					# $] < 5.019007
 ');
 }
@@ -532,6 +557,8 @@ do_test('reference to hash containing Unicode',
       PV = $ADDR "\\\235\\\101"\\\0 \[UTF8 "\\\x\{200\}"\]
       CUR = 2
       LEN = \\d+
+      COW_META = $ADDR				# $] < 5.019007
+      COW_FLAGS = $ADDR				# $] < 5.019007
       COW_REFCNT = 1				# $] < 5.019007
 ',      '',
 	$] >= 5.015
@@ -559,6 +586,8 @@ do_test('reference to hash containing Unicode',
       PV = $ADDR "\\\310\\\200"\\\0 \[UTF8 "\\\x\{200\}"\]
       CUR = 2
       LEN = \\d+
+      COW_META = $ADDR				# $] < 5.019007
+      COW_FLAGS = $ADDR				# $] < 5.019007
       COW_REFCNT = 1				# $] < 5.019007
 ',      '',
 	$] >= 5.015
@@ -578,6 +607,8 @@ do_test('scalar with pos magic',
   PV = $ADDR ""\\\0
   CUR = 0
   LEN = \d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = [12]
   MAGIC = $ADDR
     MG_VIRTUAL = &PL_vtbl_mglob
@@ -604,7 +635,7 @@ if (${^TAINT}) {
           $ENV{PATH}=@ARGV,  # scalar(@ARGV) is a handy known tainted value
 'SV = PVMG\\($ADDR\\) at $ADDR
   REFCNT = 1
-  FLAGS = \\(GMG,SMG,RMG(?:,POK)?(?:,pIOK)?,pPOK\\)
+  FLAGS = \\(GMG,SMG,RMG(?:,POK)?(?:,SHORTPV)?(?:,pIOK)?,pPOK\\)
   IV = 0
   NV = 0
   PV = $ADDR "0"\\\0
@@ -677,6 +708,8 @@ do_test('constant subroutine',
       PV = $ADDR "Perl rules"\\\0
       CUR = 10
       LEN = \\d+
+      COW_META = $ADDR
+      COW_FLAGS = $ADDR
       COW_REFCNT = 0
     GVGV::GV = $ADDR\\t"main" :: "const"
     FILE = ".*\\b(?i:peek\\.t)"
@@ -863,8 +896,10 @@ do_test('small hash',
       PV = $ADDR "(?:Rules|Foamy)"\\\0
       CUR = \d+
       LEN = \d+
+(?:      COW_META = $ADDR
+      COW_FLAGS = $ADDR
       COW_REFCNT = 1
-){2}');
+)?){2}');
 
 $b = keys %small;
 
@@ -893,8 +928,10 @@ do_test('small hash after keys',
       PV = $ADDR "(?:Rules|Foamy)"\\\0
       CUR = \d+
       LEN = \d+
+(?:      COW_META = $ADDR
+      COW_FLAGS = $ADDR
       COW_REFCNT = 1
-){2}');
+)?){2}');
 
 $b = %small;
 
@@ -923,8 +960,10 @@ do_test('small hash after keys and scalar',
       PV = $ADDR "(?:Rules|Foamy)"\\\0
       CUR = \d+
       LEN = \d+
+(?:      COW_META = $ADDR
+      COW_FLAGS = $ADDR
       COW_REFCNT = 1
-){2}');
+)?){2}');
 
 # Dump with arrays, hashes, and operator return values
 @array = 1..3;
@@ -1040,6 +1079,8 @@ unless ($Config{useithreads}) {
   PV = $ADDR "rule"\\\0
   CUR = 4
   LEN = \d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 0
 ');
 
@@ -1052,6 +1093,8 @@ unless ($Config{useithreads}) {
   PV = $ADDR "rule"\\\0
   CUR = 4
   LEN = \d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 0
   MAGIC = $ADDR
     MG_VIRTUAL = &PL_vtbl_regexp
@@ -1072,6 +1115,8 @@ unless ($Config{useithreads}) {
   PV = $ADDR "rule"\\\0
   CUR = 4
   LEN = \d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 0
   MAGIC = $ADDR
     MG_VIRTUAL = &PL_vtbl_regexp
@@ -1091,6 +1136,8 @@ unless ($Config{useithreads}) {
   PV = $ADDR "foam"\\\0
   CUR = 4
   LEN = \d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 0
 ');
 
@@ -1103,6 +1150,8 @@ unless ($Config{useithreads}) {
   PV = $ADDR "foam"\\\0
   CUR = 4
   LEN = \d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 0
 ');
 
@@ -1112,6 +1161,8 @@ unless ($Config{useithreads}) {
   PV = $ADDR "foam"\\\0
   CUR = 4
   LEN = \d+
+  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 0
   MAGIC = $ADDR
     MG_VIRTUAL = &PL_vtbl_regexp
@@ -1139,8 +1190,10 @@ unless ($Config{useithreads}) {
   PV = $ADDR "good"\\\0
   CUR = 4
   LEN = \d+
+(?:  COW_META = $ADDR
+  COW_FLAGS = $ADDR
   COW_REFCNT = 1
-');
+)?');
 }
 
 # (One block of study tests removed when study was made a no-op.)

@@ -49,65 +49,36 @@
 #endif
 
 #ifndef SV_COW_THRESHOLD
-#    define SV_COW_THRESHOLD                    0   /* COW iff len > K */
-#endif
-#ifndef SV_COWBUF_THRESHOLD
-#    define SV_COWBUF_THRESHOLD                 1250 /* COW iff len > K */
+#    define SV_COW_THRESHOLD                    1   /* COW iff cur >= K */
 #endif
 #ifndef SV_COW_MAX_WASTE_THRESHOLD
 #    define SV_COW_MAX_WASTE_THRESHOLD          80   /* COW iff (len - cur) < K */
 #endif
-#ifndef SV_COWBUF_WASTE_THRESHOLD
-#    define SV_COWBUF_WASTE_THRESHOLD           80   /* COW iff (len - cur) < K */
-#endif
 #ifndef SV_COW_MAX_WASTE_FACTOR_THRESHOLD
 #    define SV_COW_MAX_WASTE_FACTOR_THRESHOLD   2    /* COW iff len < (cur * K) */
 #endif
-#ifndef SV_COWBUF_WASTE_FACTOR_THRESHOLD
-#    define SV_COWBUF_WASTE_FACTOR_THRESHOLD    2    /* COW iff len < (cur * K) */
-#endif
-/* Work around compiler warnings about unsigned >= THRESHOLD when thres-
-   hold is 0. */
+
+/* Work around compiler warnings about unsigned >= THRESHOLD when
+   THRESHOLD is 0. */
 #if SV_COW_THRESHOLD
 # define GE_COW_THRESHOLD(cur) ((cur) >= SV_COW_THRESHOLD)
 #else
 # define GE_COW_THRESHOLD(cur) 1
-#endif
-#if SV_COWBUF_THRESHOLD
-# define GE_COWBUF_THRESHOLD(cur) ((cur) >= SV_COWBUF_THRESHOLD)
-#else
-# define GE_COWBUF_THRESHOLD(cur) 1
 #endif
 #if SV_COW_MAX_WASTE_THRESHOLD
 # define GE_COW_MAX_WASTE_THRESHOLD(cur,len) (((len)-(cur)) < SV_COW_MAX_WASTE_THRESHOLD)
 #else
 # define GE_COW_MAX_WASTE_THRESHOLD(cur,len) 1
 #endif
-#if SV_COWBUF_WASTE_THRESHOLD
-# define GE_COWBUF_WASTE_THRESHOLD(cur,len) (((len)-(cur)) < SV_COWBUF_WASTE_THRESHOLD)
-#else
-# define GE_COWBUF_WASTE_THRESHOLD(cur,len) 1
-#endif
 #if SV_COW_MAX_WASTE_FACTOR_THRESHOLD
 # define GE_COW_MAX_WASTE_FACTOR_THRESHOLD(cur,len) ((len) < SV_COW_MAX_WASTE_FACTOR_THRESHOLD * (cur))
 #else
 # define GE_COW_MAX_WASTE_FACTOR_THRESHOLD(cur,len) 1
 #endif
-#if SV_COWBUF_WASTE_FACTOR_THRESHOLD
-# define GE_COWBUF_WASTE_FACTOR_THRESHOLD(cur,len) ((len) < SV_COWBUF_WASTE_FACTOR_THRESHOLD * (cur))
-#else
-# define GE_COWBUF_WASTE_FACTOR_THRESHOLD(cur,len) 1
-#endif
-
 #define CHECK_COW_THRESHOLD(cur,len) (\
     GE_COW_THRESHOLD((cur)) && \
     GE_COW_MAX_WASTE_THRESHOLD((cur),(len)) && \
     GE_COW_MAX_WASTE_FACTOR_THRESHOLD((cur),(len)) \
-)
-#define CHECK_COWBUF_THRESHOLD(cur,len) (\
-    GE_COWBUF_THRESHOLD((cur)) && \
-    GE_COWBUF_WASTE_THRESHOLD((cur),(len)) && \
-    GE_COWBUF_WASTE_FACTOR_THRESHOLD((cur),(len)) \
 )
 
 #ifdef PERL_UTF8_CACHE_ASSERT
@@ -949,7 +920,7 @@ static const struct body_details bodies_by_type[] = {
 #endif
 
     { sizeof(XPV) - STRUCT_OFFSET(XPV, xpv_cur),
-      copy_length(XPV, xpv_len) - STRUCT_OFFSET(XPV, xpv_cur),
+      copy_length(XPV, xpv_bufu) - STRUCT_OFFSET(XPV, xpv_cur),
       + STRUCT_OFFSET(XPV, xpv_cur),
       SVt_PV, FALSE, NONV, HASARENA,
       FIT_ARENA(0, sizeof(XPV) - STRUCT_OFFSET(XPV, xpv_cur)) },
@@ -1476,6 +1447,21 @@ Perl_sv_upgrade(pTHX_ SV *const sv, svtype new_type)
     /* if this is zero, this is a body-less SVt_NULL, SVt_IV/SVt_RV,
        and sometimes SVt_NV */
     if (old_type_details->body_size) {
+        /* If the PVX is stored in the old body, keep the old body around
+         * (pointed to by SvPVX) with the buffer, so code doesn't see
+         * the buffer address change when the SV is upgraded.
+         * We store the old body type in the old cur field.
+         * The old body will be freed when we free the SV.
+         *
+         * NB the SVf_SHORTPV flag bit has a different meaning for AVs and
+         * HVs, but they're unlikely to have [AH]vARRAY stored in the body
+         */
+        if (   SvSHORTPV(sv)
+            && SvSHORTPV_BODY_FROM_PV(sv->sv_u.svu_pv) == old_body)
+        {
+            ((XPV*)old_body)->xpv_cur = (STRLEN)old_type;
+        }
+        else {
 #ifdef PURIFY
 	safefree(old_body);
 #else
@@ -1486,6 +1472,7 @@ Perl_sv_upgrade(pTHX_ SV *const sv, svtype new_type)
 	del_body((void*)((char*)old_body + old_type_details->offset),
 		 &PL_body_roots[old_type]);
 #endif
+        }
     }
 }
 
@@ -1527,6 +1514,31 @@ Perl_sv_backoff(SV *const sv)
 /* forward declaration */
 static void S_sv_uncow(pTHX_ SV * const sv, const U32 flags);
 
+#ifdef PERL_COPY_ON_WRITE3
+
+/* After an upgrade an SvSHORTPV, the SV may have it's PVX pointing to
+ * the old body. If so return it to the appropriate body arena.
+ */
+/* XXX this should really be PERL_STATIC_INLINE, but bodies_by_type isn't
+ * global (yet) */
+void
+Perl_sv_shortpv_free_any_old_body(pTHX_ SV *const sv)
+{
+    void* old_body;
+
+    PERL_ARGS_ASSERT_SV_SHORTPV_FREE_ANY_OLD_BODY;
+    assert(SvSHORTPV(sv));
+    assert(SvPVX_const(sv));
+    old_body = SvSHORTPV_BODY_FROM_PV(SvPVX_mutable(sv));
+    if (SvANY(sv) != old_body) {
+        const svtype old_type = (svtype)(((XPV*)old_body)->xpv_cur);
+        del_body(
+            (void*)(
+              (char*)old_body + bodies_by_type[old_type].offset),
+            &PL_body_roots[old_type]);
+    }
+}
+#endif
 
 /*
 =for apidoc sv_grow
@@ -1564,6 +1576,23 @@ Perl_sv_grow(pTHX_ SV *const sv, STRLEN newlen)
 	s = SvPVX_mutable(sv);
     }
 
+#ifdef PERL_COPY_ON_WRITE3
+    /* try to use a SHORTPV where possible */
+    if (newlen <= SvSHORTPV_BUFSIZE) {
+        if (SvSHORTPV(sv))
+            /* XXX should sv_grow ever be called in this case?
+             * if not, turn into an assert? */
+            return s; /* already set up */
+        if (!s && SvTYPE(sv) != SVt_INVLIST) {
+            /* XXX if already got a buffer, is it worth freeing it
+             * and converting to SHORTPV rather than reallocing? */
+            SvSHORTPV_on(sv);
+            SvSHORTPV_SET_PV(sv);
+            return SvPVX_mutable(sv);
+        }
+    }
+#endif
+
 #ifdef PERL_COPY_ON_WRITE
     /* the new COW scheme uses SvPVX(sv)[SvLEN(sv)-1] (if spare)
      * to store the COW count. So in general, allocate one more byte than
@@ -1596,6 +1625,24 @@ Perl_sv_grow(pTHX_ SV *const sv, STRLEN newlen)
                 newlen = rounded;
         }
 #endif
+
+#ifdef PERL_COPY_ON_WRITE3
+        if (SvSHORTPV(sv)) {
+            /* too long for SHORTPV, convert to a real PV */
+            char *buf = SvPVX_mutable(sv);
+	    s = (char*)safemalloc(newlen);
+            /* SvCUR() may not be valid at this point, so copy the whole
+             * buffer, */
+            assert(newlen >= SvSHORTPV_BUFSIZE);
+            Copy(buf, s, SvSHORTPV_BUFSIZE, char);
+            Perl_sv_shortpv_free_any_old_body(aTHX_ sv);
+            SvSHORTPV_off(sv);
+            SvPV_set(sv, s);
+            SvLEN_set(sv, newlen);
+            return s;
+        }
+#endif
+
 	if (SvLEN(sv) && s) {
 	    s = (char*)saferealloc(s, newlen);
 	}
@@ -1605,6 +1652,7 @@ Perl_sv_grow(pTHX_ SV *const sv, STRLEN newlen)
                 Move(SvPVX_const(sv), s, SvCUR(sv), char);
 	    }
 	}
+
 	SvPV_set(sv, s);
 #ifdef PERL_UNWARANTED_CHUMMINESS_WITH_MALLOC
 	/* Do this here, do it once, do it right, and then we will never get
@@ -4589,6 +4637,7 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
     else if (sflags & SVp_POK) {
 	const STRLEN cur = SvCUR(sstr);
 	const STRLEN len = SvLEN(sstr);
+        const U32 is_cow = sflags & SVf_IsCOW;
 
 	/*
 	 * We have three basic ways to copy the string:
@@ -4620,8 +4669,8 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
 	 * strings, as the savings here are small.
 	 * 
 	 * If swiping is not an option, then we see whether it is
-	 * worth using copy-on-write.  If the lhs already has a buf-
-	 * fer big enough and the string is short, we skip it and fall back
+         * worth using copy-on-write.  If the lhs already has a buffer
+         * big enough and the string is short, we skip it and fall back
 	 * to method 3, since memcpy is faster for short strings than the
 	 * later bookkeeping overhead that copy-on-write entails.
 
@@ -4644,7 +4693,30 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
 	   and doing it now facilitates the COW check.  */
 	(void)SvPOK_only(dstr);
 
+#ifdef PERL_COPY_ON_WRITE3
+        if (SvSHORTPV(sstr) && (SvSHORTPV(dstr) || !SvPVX_const(dstr))) {
+            /* for short strings, if possible just make the dest a short
+             * string and copy the buffer.
+             * XXX would it be cost-effective to free the buffer if dstr
+             * has one? i.e. skip the !SvPVX_const test above.
+             */
+            if (!SvSHORTPV(dstr)) {
+                /* convert dstr to SHORTPV */
+                assert(!SvPVX_const(dstr));
+                SvSHORTPV_SET_PV(dstr);
+                SvSHORTPV_on(dstr);
+            }
+            SvSHORTPV_COPY(SvPVX_const(sstr), SvPVX_const(dstr));
+	    SvCUR_set(dstr, cur);
+            /* should we have inherited the \0 from sstr??? */
+	    *SvEND(dstr) = '\0';
+        }
+        else
+#endif
+
 	if (
+                 len                 &&     /* and really is a string */
+                 SvREFCNT(sstr) == 1 &&     /* and no other references to it? */
                  (              /* Either ... */
 				/* slated for free anyway (and not COW)? */
                     (sflags & (SVs_TEMP|SVf_IsCOW)) == SVs_TEMP
@@ -4653,15 +4725,13 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
                            (SVs_PADTMP|SVf_READONLY|SVf_PROTECT|SVf_IsCOW))
                        == SVs_PADTMP
                                 /* whose buffer is worth stealing */
-                     && CHECK_COWBUF_THRESHOLD(cur,len)
+                     && CHECK_COW_THRESHOLD(cur,len)
                     )
                  ) &&
-                 !(sflags & SVf_OOK) &&   /* and not involved in OOK hack? */
-	         (!(flags & SV_NOSTEAL)) &&
-					/* and we're allowed to steal temps */
-                 SvREFCNT(sstr) == 1 &&   /* and no other references to it? */
-                 len)             /* and really is a string */
-	{	/* Passes the swipe test.  */
+                 !(sflags & SVf_SHORTPV) &&
+                 !(sflags & SVf_OOK) &&     /* and not involved in OOK hack? */
+                 !(flags & SV_NOSTEAL)      /* and we're allowed to steal temps */
+        ){        /* Passes the swipe test.  */
 	    if (SvPVX_const(dstr))	/* we know that dtype >= SVt_PV */
 		SvPV_free(dstr);
 	    SvPV_set(dstr, SvPVX_mutable(sstr));
@@ -4678,33 +4748,37 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
 	else if (flags & SV_COW_SHARED_HASH_KEYS
 	      &&
 #ifdef PERL_COPY_ON_WRITE
-		 (sflags & SVf_IsCOW
+		 (is_cow
 		   ? (!len ||
-                       (  (CHECK_COWBUF_THRESHOLD(cur,len) || SvLEN(dstr) < cur+1)
-			  /* If this is a regular (non-hek) COW, only so
-			     many COW "copies" are possible. */
-		       && CowREFCNT(sstr) != SV_COW_REFCNT_MAX  ))
-		   : (  (sflags & CAN_COW_MASK) == CAN_COW_FLAGS
+                       /* If this is a regular (non-hek) COW, only so
+                         many COW "copies" are possible. */
+                       ( CowREFCNT(sstr) != SV_COW_REFCNT_MAX )
+                     )
+		   : (  SvCANCOW(sstr)
 		     && !(SvFLAGS(dstr) & SVf_BREAK)
-                     && CHECK_COW_THRESHOLD(cur,len) && cur+1 < len
-                     && (CHECK_COWBUF_THRESHOLD(cur,len) || SvLEN(dstr) < cur+1)
+                     && CHECK_COW_THRESHOLD(cur,len)
 		    ))
 #else
-		 sflags & SVf_IsCOW
+		 is_cow
 	      && !(SvFLAGS(dstr) & SVf_BREAK)
 #endif
+              && !(sflags & SVf_SHORTPV)
             ) {
             /* Either it's a shared hash key, or it's suitable for
                copy-on-write.  */
-            if (DEBUG_C_TEST) {
-                PerlIO_printf(Perl_debug_log, "Copy on write: sstr --> dstr\n");
+#ifdef PERL_ANY_COW
+            if (!is_cow) {
+                if (DEBUG_C_TEST) {
+                    PerlIO_printf(Perl_debug_log, "Copy on write: encow: sstr --> dstr\n");
+                }
+                sv_cow_meta_setup(sstr);
+            } else if (DEBUG_C_TEST) {
+                PerlIO_printf(Perl_debug_log, "Copy on write: recow: sstr --> dstr\n");
+            }
+
+            if (DEBUG_C_TEST_DUMP) {
                 sv_dump(sstr);
                 sv_dump(dstr);
-            }
-#ifdef PERL_ANY_COW
-            if (!(sflags & SVf_IsCOW)) {
-                    SvIsCOW_on(sstr);
-		    CowREFCNT(sstr) = 0;
             }
 #endif
 	    if (SvPVX_const(dstr)) {	/* we know that dtype >= SVt_PV */
@@ -4713,24 +4787,21 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
 
 #ifdef PERL_ANY_COW
 	    if (len) {
-		    if (sflags & SVf_IsCOW) {
-			sv_buf_to_rw(sstr);
-		    }
-		    CowREFCNT(sstr)++;
-                    SvPV_set(dstr, SvPVX_mutable(sstr));
-                    sv_buf_to_ro(sstr);
+                COW_META *cm = SvCOW_META(sstr);
+                cm->cm_refcnt++;
+                SvPV_set(dstr, SvPVX_mutable(sstr));
+                SvCOW_META_set(dstr,cm);
             } else
 #endif
             {
-                    /* SvIsCOW_shared_hash */
-                    DEBUG_C(PerlIO_printf(Perl_debug_log,
-                                          "Copy on write: Sharing hash\n"));
+                /* SvIsCOW_shared_hash */
+                DEBUG_C(PerlIO_printf(Perl_debug_log,
+                                      "Copy on write: Sharing hash key\n"));
 
-		    assert (SvTYPE(dstr) >= SVt_PV);
-                    SvPV_set(dstr,
-			     HEK_KEY(share_hek_hek(SvSHARED_HEK_FROM_PV(SvPVX_const(sstr)))));
+                assert (SvTYPE(dstr) >= SVt_PV);
+                SvPV_set(dstr, HEK_KEY(share_hek_hek(SvSHARED_HEK_FROM_PV(SvPVX_const(sstr)))));
+                SvLEN_raw_set(dstr, len); /* note len == 0 here */
 	    }
-	    SvLEN_set(dstr, len);
 	    SvCUR_set(dstr, cur);
 	    SvIsCOW_on(dstr);
 	} else {
@@ -4758,7 +4829,7 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
 		SvRMAGICAL_on(dstr);
 	    }
 	}
-    }
+    } /* end SVp_POK */
     else if (sflags & (SVp_IOK|SVp_NOK)) {
 	(void)SvOK_off(dstr);
 	SvFLAGS(dstr) |= sflags & (SVf_IOK|SVp_IOK|SVf_IVisUV|SVf_NOK|SVp_NOK);
@@ -4863,15 +4934,73 @@ Perl_sv_setsv_mg(pTHX_ SV *const dstr, SV *const sstr)
 
 #ifdef PERL_ANY_COW
 #  define SVt_COW SVt_PV
+
+/* temporarily swipe the HE arena code from hv.c */
+#ifdef PURIFY
+
+#define new_COW_META() (HE*)safemalloc(sizeof(COW_META))
+#define del_COW_META(p) safefree((char*)p)
+
+#else
+#define COW_META_ARENA_ELEMENTS 1024
+
+PERL_STATIC_INLINE COW_META*
+S_new_COW_META(pTHX)
+{
+    COW_META_ARENA *ret = PL_cow_meta_arena_free;
+    if (ret)
+    {
+        PL_cow_meta_arena_free = ret->u.prev_free;
+    }
+    else {
+        if ( PL_cow_meta_arena_next <= PL_cow_meta_arena_first  )
+        {
+            COW_META_ARENA *new_arena;
+            Newx(new_arena, COW_META_ARENA_ELEMENTS, COW_META_ARENA);
+            new_arena->u.prev_arena= PL_cow_meta_arena_first;
+            PL_cow_meta_arena_first= new_arena;
+            PL_cow_meta_arena_next= new_arena + (COW_META_ARENA_ELEMENTS-1);
+        }
+        ret= PL_cow_meta_arena_next--;
+    }
+    return (COW_META *)ret;
+}
+
+#define new_COW_META() S_new_COW_META(aTHX)
+#define del_COW_META(p) \
+    STMT_START { \
+        ((COW_META_ARENA *)p)->u.prev_free = PL_cow_meta_arena_free; \
+        PL_cow_meta_arena_free = (COW_META_ARENA *)p; \
+    } STMT_END
+#endif
+
+SV *
+Perl_sv_cow_meta_setup(pTHX_ SV *sstr)
+{
+    PERL_ARGS_ASSERT_SV_COW_META_SETUP;
+    assert (SvCANCOW(sstr));
+    {
+        COW_META *cm= new_COW_META();
+        assert (!SvIsCOW(sstr));
+        assert (SvCANCOW(sstr));
+        SvUPGRADE(sstr, SVt_COW);
+        cm->cm_len= SvLEN_raw(sstr);
+        cm->cm_refcnt= 0;
+        cm->cm_flags= 0;
+        SvCOW_META_set(sstr,cm);
+        SvIsCOW_on(sstr);
+        sv_buf_to_ro(sstr);
+        return sstr;
+    }
+}
+
+
 SV *
 Perl_sv_setsv_cow(pTHX_ SV *dstr, SV *sstr)
 {
     STRLEN cur = SvCUR(sstr);
     STRLEN len = SvLEN(sstr);
     char *new_pv;
-#if defined(PERL_DEBUG_READONLY_COW) && defined(PERL_COPY_ON_WRITE)
-    const bool already = cBOOL(SvIsCOW(sstr));
-#endif
 
     PERL_ARGS_ASSERT_SV_SETSV_COW;
 
@@ -4880,17 +5009,27 @@ Perl_sv_setsv_cow(pTHX_ SV *dstr, SV *sstr)
 		      (void*)sstr, (void*)dstr);
 	sv_dump(sstr);
 	if (dstr)
-		    sv_dump(dstr);
+            sv_dump(dstr);
     }
 
     if (dstr) {
 	if (SvTHINKFIRST(dstr))
 	    sv_force_normal_flags(dstr, SV_COW_DROP_PV);
+	else if (SvSHORTPV(dstr)) {
+            SvSHORTPV_off(dstr);
+            SvPV_set(dstr, NULL);
+        }
 	else if (SvPVX_const(dstr))
 	    Safefree(SvPVX_mutable(dstr));
     }
-    else
+    else {
 	new_SV(dstr);
+        if (DEBUG_C_TEST) {
+            PerlIO_printf(Perl_debug_log, "Fast copy on write - new dest: %p -> %p\n",
+                          (void*)sstr, (void*)dstr);
+            sv_dump(dstr);
+        }
+    }
     SvUPGRADE(dstr, SVt_COW);
 
     assert (SvPOK(sstr));
@@ -4898,38 +5037,37 @@ Perl_sv_setsv_cow(pTHX_ SV *dstr, SV *sstr)
 
     if (SvIsCOW(sstr)) {
 
-	if (SvLEN(sstr) == 0) {
+        if (len == 0) {
 	    /* source is a COW shared hash key.  */
 	    DEBUG_C(PerlIO_printf(Perl_debug_log,
-				  "Fast copy on write: Sharing hash\n"));
+                                  "Fast copy on write: Sharing hash key\n"));
 	    new_pv = HEK_KEY(share_hek_hek(SvSHARED_HEK_FROM_PV(SvPVX_const(sstr))));
+            SvLEN_set(dstr, 0);
 	    goto common_exit;
-	}
-	assert(SvCUR(sstr)+1 < SvLEN(sstr));
-	assert(CowREFCNT(sstr) < SV_COW_REFCNT_MAX);
+        } else {
+            DEBUG_C(PerlIO_printf(Perl_debug_log,
+                                  "Fast copy on write: Sharing existing COW-META\n"));
+        }
     } else {
-	assert ((SvFLAGS(sstr) & CAN_COW_MASK) == CAN_COW_FLAGS);
-	SvUPGRADE(sstr, SVt_COW);
-	SvIsCOW_on(sstr);
 	DEBUG_C(PerlIO_printf(Perl_debug_log,
-			      "Fast copy on write: Converting sstr to COW\n"));
-	CowREFCNT(sstr) = 0;	
+                              "Fast copy on write: Converting sstr to COW-META\n"));
+        sv_cow_meta_setup(sstr);
     }
-#  ifdef PERL_DEBUG_READONLY_COW
-    if (already) sv_buf_to_rw(sstr);
-#  endif
+    assert(SvIsCOW(sstr) && len);
+    assert(CowREFCNT(sstr) < SV_COW_REFCNT_MAX);
     CowREFCNT(sstr)++;	
+    SvCOW_META_set(dstr,SvCOW_META(sstr));
     new_pv = SvPVX_mutable(sstr);
-    sv_buf_to_ro(sstr);
 
   common_exit:
     SvPV_set(dstr, new_pv);
     SvFLAGS(dstr) = (SVt_COW|SVf_POK|SVp_POK|SVf_IsCOW);
     if (SvUTF8(sstr))
 	SvUTF8_on(dstr);
-    SvLEN_set(dstr, len);
     SvCUR_set(dstr, cur);
     if (DEBUG_C_TEST) {
+        PerlIO_printf(Perl_debug_log, "Fast copy on write finish: %p -> %p\n",
+                      (void*)sstr, (void*)dstr);
 	sv_dump(dstr);
     }
     return dstr;
@@ -4953,6 +5091,10 @@ Perl_sv_setpv_bufsize(pTHX_ SV *const sv, const STRLEN cur, const STRLEN len)
 
     PERL_ARGS_ASSERT_SV_SETPV_BUFSIZE;
 
+    if (DEBUG_C_TEST && SvIsCOW(sv)) {
+        PerlIO_printf(Perl_debug_log, "Copy on write: sv_setpv_bufsize\n");
+        if (DEBUG_C_TEST_DUMP) sv_dump(sv);
+    }
     SV_CHECK_THINKFIRST_COW_DROP(sv);
     SvUPGRADE(sv, SVt_PV);
     pv = SvGROW(sv, len + 1);
@@ -5216,12 +5358,13 @@ S_sv_uncow(pTHX_ SV * const sv, const U32 flags)
 	const char * const pvx = SvPVX_const(sv);
 	const STRLEN len = SvLEN(sv);
 	const STRLEN cur = SvCUR(sv);
+        COW_META *cm = SvCOW_META(sv);
 
         if (DEBUG_C_TEST) {
-                PerlIO_printf(Perl_debug_log,
-                              "Copy on write: Force normal %ld\n",
-                              (long) flags);
-                sv_dump(sv);
+            PerlIO_printf(Perl_debug_log,
+                          "Copy on write: sv_uncow, flags = %ld\n",
+                          (long) flags);
+            if (DEBUG_C_TEST_DUMP) sv_dump(sv);
         }
         SvIsCOW_off(sv);
 # ifdef PERL_COPY_ON_WRITE
@@ -5229,16 +5372,13 @@ S_sv_uncow(pTHX_ SV * const sv, const U32 flags)
 	    /* Must do this first, since the CowREFCNT uses SvPVX and
 	    we need to write to CowREFCNT, or de-RO the whole buffer if we are
 	    the only owner left of the buffer. */
-	    sv_buf_to_rw(sv); /* NOOP if RO-ing not supported */
-	    {
-		U8 cowrefcnt = CowREFCNT(sv);
-		if(cowrefcnt != 0) {
-		    cowrefcnt--;
-		    CowREFCNT(sv) = cowrefcnt;
-		    sv_buf_to_ro(sv);
-		    goto copy_over;
-		}
-	    }
+            if (cm->cm_refcnt) {
+                cm->cm_refcnt--;
+            } else {
+               del_COW_META(cm);
+                sv_buf_to_rw(sv); /* NOOP if RO-ing not supported */
+            }
+            goto copy_over;
 	    /* Else we are the only owner of the buffer. */
         }
 	else
@@ -5262,9 +5402,6 @@ S_sv_uncow(pTHX_ SV * const sv, const U32 flags)
 	    } else {
 		unshare_hek(SvSHARED_HEK_FROM_PV(pvx));
 	    }
-            if (DEBUG_C_TEST) {
-                sv_dump(sv);
-            }
 	}
 #else
 	    const char * const pvx = SvPVX_const(sv);
@@ -5316,6 +5453,7 @@ Perl_sv_force_normal_flags(pTHX_ SV *const sv, const U32 flags)
 
     if (SvREADONLY(sv))
 	Perl_croak_no_modify();
+
     else if (SvIsCOW(sv) && LIKELY(SvTYPE(sv) != SVt_PVHV))
 	S_sv_uncow(aTHX_ sv, flags);
     if (SvROK(sv))
@@ -5346,8 +5484,8 @@ Perl_sv_force_normal_flags(pTHX_ SV *const sv, const U32 flags)
             /* LV-as-regex has sv->sv_any pointing to an XPVLV body,
              * whose xpvlenu_rx field points to the regex body */
             XPV *xpv = (XPV*)(SvANY(sv));
-            old_rx_body = xpv->xpv_len_u.xpvlenu_rx;
-            xpv->xpv_len_u.xpvlenu_rx = NULL;
+            old_rx_body = xpv->xpv_rx;
+            xpv->xpv_rx = NULL;
         }
         else
             old_rx_body = ReANY((REGEXP *)sv);
@@ -5433,6 +5571,18 @@ Perl_sv_chop(pTHX_ SV *const sv, const char *const ptr)
     SvPOK_only_UTF8(sv);
 
     if (!SvOOK(sv)) {
+#ifdef PERL_COPY_ON_WRITE3
+        if (SvSHORTPV(sv)) {
+            /* for short strings, just shift the buffer rather than
+             * doing the OOK hack */
+	    const STRLEN len = SvCUR(sv) - delta;
+            if (len > 0)
+                Move(ptr, SvPVX_mutable(sv), len, char);
+            SvCUR_set(sv, len);
+	    *SvEND(sv) = '\0';
+            return;
+        }
+#endif
 	if (!SvLEN(sv)) { /* make copy of shared string */
 	    const char *pvx = SvPVX_const(sv);
 	    const STRLEN len = SvCUR(sv);
@@ -6801,29 +6951,44 @@ Perl_sv_clear(pTHX_ SV *const orig_sv)
 			next_sv = target;
 		}
 	    }
+#ifdef PERL_COPY_ON_WRITE3
+	    else if (SvSHORTPV(sv))
+                Perl_sv_shortpv_free_any_old_body(aTHX_ sv);
+#endif
 #ifdef PERL_ANY_COW
 	    else if (SvPVX_const(sv)
 		     && !(SvTYPE(sv) == SVt_PVIO
 		     && !(IoFLAGS(sv) & IOf_FAKE_DIRP)))
 	    {
+                STRLEN len = SvLEN(sv);
 		if (SvIsCOW(sv)) {
-		    if (DEBUG_C_TEST) {
-			PerlIO_printf(Perl_debug_log, "Copy on write: clear\n");
-			sv_dump(sv);
-		    }
-		    if (SvLEN(sv)) {
-			if (CowREFCNT(sv)) {
-			    sv_buf_to_rw(sv);
-			    CowREFCNT(sv)--;
-			    sv_buf_to_ro(sv);
-			    SvLEN_set(sv, 0);
-			}
+                    if ( len ) {
+                        COW_META *cm= SvCOW_META(sv);
+                        if (DEBUG_C_TEST) {
+                            PerlIO_printf(Perl_debug_log, "Copy on write: %s clear\n",
+                                cm->cm_refcnt ? "release in" : "uncow in");
+                            if (DEBUG_C_TEST_DUMP) sv_dump(sv);
+                        }
+                        SvIsCOW_off(sv);
+                        if (cm->cm_refcnt > 0) {
+                            cm->cm_refcnt--;
+                            SvLEN_set(sv, 0);
+                            len = 0;
+                        } else {
+                            del_COW_META(cm);
+                            SvLEN_set(sv, len);
+                        }
 		    } else {
+                        if (DEBUG_C_TEST) {
+                            PerlIO_printf(Perl_debug_log,
+                                "Copy on write: uncow shared hek in clear\n");
+                            if (DEBUG_C_TEST_DUMP) sv_dump(sv);
+                        }
 			unshare_hek(SvSHARED_HEK_FROM_PV(SvPVX_const(sv)));
+                        SvIsCOW_off(sv);
 		    }
-
 		}
-		if (SvLEN(sv)) {
+                if (len) {
 		    Safefree(SvPVX_mutable(sv));
 		}
 	    }
@@ -14037,14 +14202,28 @@ Perl_rvpv_dup(pTHX_ SV *const dstr, const SV *const sstr, CLONE_PARAMS *const pa
 	else
 	    SvRV_set(dstr, sv_dup_inc(SvRV_const(sstr), param));
     }
+#ifdef PERL_COPY_ON_WRITE3
+    else if (SvSHORTPV(sstr)) {
+        SvSHORTPV_SET_PV(dstr);
+        /* usually the string is in the body, so will already have been
+         * copied when the body was copied, except... */
+        if (SvANY(sstr) != SvSHORTPV_BODY_FROM_PV(SvPVX_mutable(sstr))) {
+            /* ... sstr had SvPVX pointing to an old body containing the
+             * buffer, so need to copy the string */
+            SvSHORTPV_COPY(SvPVX_const(sstr), SvPVX_const(dstr));
+        }
+    }
+#endif
     else if (SvPVX_const(sstr)) {
+        STRLEN len= SvLEN(sstr);
 	/* Has something there */
-	if (SvLEN(sstr)) {
+        if (len) {
 	    /* Normal PV - clone whole allocated space */
 	    SvPV_set(dstr, SAVEPVN(SvPVX_const(sstr), SvLEN(sstr)-1));
 	    /* sstr may not be that normal, but actually copy on write.
 	       But we are a true, independent SV, so:  */
 	    SvIsCOW_off(dstr);
+            SvLEN_set(dstr,len);
 	}
 	else {
 	    /* Special case - not normally malloced for some reason */
@@ -15208,7 +15387,11 @@ perl_clone_using(PerlInterpreter *proto_perl, UV flags,
 
     PL_body_arenas = NULL;
     Zero(&PL_body_roots, 1, PL_body_roots);
-    
+
+    PL_cow_meta_arena_free = NULL;
+    PL_cow_meta_arena_first = NULL;
+    PL_cow_meta_arena_next = NULL;
+
     PL_sv_count		= 0;
     PL_sv_root		= NULL;
     PL_sv_arenaroot	= NULL;
