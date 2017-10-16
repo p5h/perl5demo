@@ -3658,6 +3658,8 @@ L<perlfunc/require EXPR> and L<perlfunc/do EXPR>.
 
 =item Missing right brace on \%c{} in regex; marked by S<<-- HERE> in m/%s/
 
+=item Missing right brace on \N{} in regex; marked by S<<-- HERE> in m/%s/
+
 (F) Missing right brace in C<\x{...}>, C<\p{...}>, C<\P{...}>, or C<\N{...}>.
 
 =item Missing right brace on \N{}
