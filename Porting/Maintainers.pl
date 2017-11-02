@@ -339,9 +339,7 @@ use File::Glob qw(:case);
 
     'Devel::PPPort' => {
         'DISTRIBUTION' => 'WOLFSAGE/Devel-PPPort-3.36.tar.gz',
-        # RJBS has asked MHX to have UPSTREAM be 'blead'
-        # (i.e. move this from cpan/ to dist/)
-        'FILES'        => q[cpan/Devel-PPPort],
+        'FILES'        => q[dist/Devel-PPPort],
         'EXCLUDED'     => [
             'PPPort.pm',    # we use PPPort_pm.PL instead
         ],
@@ -794,7 +792,7 @@ use File::Glob qw(:case);
     },
 
     'Module::CoreList' => {
-        'DISTRIBUTION' => 'BINGOS/Module-CoreList-5.20170923.tar.gz',
+        'DISTRIBUTION' => 'BINGOS/Module-CoreList-5.20171020.tar.gz',
         'FILES'        => q[dist/Module-CoreList],
     },
 
@@ -825,7 +823,7 @@ use File::Glob qw(:case);
     },
 
     'Net::Ping' => {
-        'DISTRIBUTION' => 'RURBAN/Net-Ping-2.55.tar.gz',
+        'DISTRIBUTION' => 'RURBAN/Net-Ping-2.61.tar.gz',
         'FILES'        => q[dist/Net-Ping],
         'EXCLUDED'     => [
             qw(README.md.PL),
@@ -836,9 +834,7 @@ use File::Glob qw(:case);
         'CUSTOMIZED'   => [
             qw( t/000_load.t
                 t/001_new.t
-                t/010_pingecho.t
-                t/500_ping_icmp.t
-                t/510_ping_udp.t),
+                t/500_ping_icmp.t),
         ],
 
     },
@@ -847,6 +843,7 @@ use File::Glob qw(:case);
         'DISTRIBUTION' => 'NEILB/NEXT-0.67.tar.gz',
         'FILES'        => q[cpan/NEXT],
         'EXCLUDED'     => [qr{^demo/}],
+        'CUSTOMIZED'   => [ qw(lib/NEXT.pm t/next.t) ],
     },
 
     'Params::Check' => {
@@ -933,6 +930,11 @@ use File::Glob qw(:case);
             # https://rt.cpan.org/Ticket/Display.html?id=116827
             't/02_module_pod_output.t'
         ],
+
+        'CUSTOMIZED'   => [
+	    # [rt.cpan.org #88204], [rt.cpan.org #120229]
+	    'lib/Pod/Perldoc.pm',
+	],
     },
 
     'Pod::Simple' => {
@@ -1069,7 +1071,7 @@ use File::Glob qw(:case);
     },
 
     'Test::Simple' => {
-        'DISTRIBUTION' => 'EXODIST/Test-Simple-1.302101.tar.gz',
+        'DISTRIBUTION' => 'EXODIST/Test-Simple-1.302103.tar.gz',
         'FILES'        => q[cpan/Test-Simple],
         'EXCLUDED'     => [
             qr{^examples/},
@@ -1249,7 +1251,7 @@ use File::Glob qw(:case);
         # only necessary with the CPAN release.
         'CUSTOMIZED'   => [
             qw( lib/version.pm
-                vutil.c
+                vxs.inc
                 ),
         ],
 
