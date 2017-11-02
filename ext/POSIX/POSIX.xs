@@ -34,17 +34,13 @@ static int not_here(const char *s);
 #ifdef WIN32
 #include <sys/errno2.h>
 #endif
-#ifdef I_FLOAT
 #include <float.h>
-#endif
 #ifdef I_FENV
 #if !(defined(__vax__) && defined(__NetBSD__))
 #include <fenv.h>
 #endif
 #endif
-#ifdef I_LIMITS
 #include <limits.h>
-#endif
 #include <locale.h>
 #include <math.h>
 #ifdef I_PWD
@@ -53,13 +49,18 @@ static int not_here(const char *s);
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
-
-#ifdef I_STDDEF
 #include <stddef.h>
-#endif
 
 #ifdef I_UNISTD
 #include <unistd.h>
+#endif
+
+#ifdef I_SYS_TIME
+# include <sys/time.h>
+#endif
+
+#ifdef I_SYS_RESOURCE
+# include <sys/resource.h>
 #endif
 
 #if defined(USE_QUADMATH) && defined(I_QUADMATH)
@@ -1328,9 +1329,7 @@ static NV_PAYLOAD_TYPE S_getpayload(NV nv)
 #if defined(I_TERMIOS)
 #include <termios.h>
 #endif
-#ifdef I_STDLIB
 #include <stdlib.h>
-#endif
 #ifndef __ultrix__
 #include <string.h>
 #endif
@@ -1792,7 +1791,7 @@ fix_win32_tzenv(void)
         perl_tz_env = "";
     if (crt_tz_env == NULL)
         crt_tz_env = "";
-    if (strcmp(perl_tz_env, crt_tz_env) != 0) {
+    if (strNE(perl_tz_env, crt_tz_env)) {
         newenv = (char*)malloc((strlen(perl_tz_env) + 4) * sizeof(char));
         if (newenv != NULL) {
             sprintf(newenv, "TZ=%s", perl_tz_env);

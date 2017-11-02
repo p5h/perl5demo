@@ -1209,12 +1209,13 @@ S_mulexp10(NV value, I32 exponent)
 NV
 Perl_my_atof(pTHX_ const char* s)
 {
+    /* 's' must be NUL terminated */
+
     NV x = 0.0;
 #ifdef USE_QUADMATH
     Perl_my_atof2(aTHX_ s, &x);
     return x;
-#else
-#  ifdef USE_LOCALE_NUMERIC
+#elif defined(USE_LOCALE_NUMERIC)
     PERL_ARGS_ASSERT_MY_ATOF;
 
     {
@@ -1244,9 +1245,8 @@ Perl_my_atof(pTHX_ const char* s)
             Perl_atof2(s, x);
         RESTORE_LC_NUMERIC();
     }
-#  else
+#else
     Perl_atof2(s, x);
-#  endif
 #endif
     return x;
 }

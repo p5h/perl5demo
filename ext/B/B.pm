@@ -15,7 +15,7 @@ require Exporter;
 # walkoptree comes from B.xs
 
 BEGIN {
-    $B::VERSION = '1.70';
+    $B::VERSION = '1.71';
     @B::EXPORT_OK = ();
 
     # Our BOOT code needs $VERSION set, and will append to @EXPORT_OK.
@@ -261,6 +261,8 @@ sub walksymtable {
     no strict 'refs';
     $prefix = '' unless defined $prefix;
     foreach my $sym ( sort keys %$symref ) {
+        my $dummy = $symref->{$sym}; # Copying the glob and incrementing
+                                     # the GPs refcnt clears cached methods
         $fullname = "*main::".$prefix.$sym;
 	if ($sym =~ /::$/) {
 	    $sym = $prefix . $sym;

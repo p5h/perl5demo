@@ -2595,6 +2595,7 @@ S_get_and_check_backslash_N_name(pTHX_ const char* s, const char* const e)
     PERL_ARGS_ASSERT_GET_AND_CHECK_BACKSLASH_N_NAME;
 
     if (!SvCUR(res)) {
+        SvREFCNT_dec_NN(res);
         /* diag_listed_as: Unknown charname '%s' */
         yyerror("Unknown charname ''");
         return NULL;
@@ -2969,9 +2970,9 @@ S_scan_const(pTHX_ char *start)
 
                 /* Here, we don't think we're in a range.  If the new character
                  * is not a hyphen; or if it is a hyphen, but it's too close to
-                 * either edge to indicate a range, then it's a regular
-                 * character. */
-                if (*s != '-' || s >= send - 1 || s == start) {
+                 * either edge to indicate a range, or if we haven't output any
+                 * characters yet then it's a regular character. */
+                if (*s != '-' || s >= send - 1 || s == start || d == SvPVX(sv)) {
 
                     /* A regular character.  Process like any other, but first
                      * clear any flags */
@@ -3627,11 +3628,12 @@ S_scan_const(pTHX_ char *start)
                  * For non-patterns, the named characters are converted to
                  * their string equivalents.  In patterns, named characters are
                  * not converted to their ultimate forms for the same reasons
-                 * that other escapes aren't.  Instead, they are converted to
-                 * the \N{U+...} form to get the value from the charnames that
-                 * is in effect right now, while preserving the fact that it
-                 * was a named character, so that the regex compiler knows
-                 * this.
+                 * that other escapes aren't (mainly that the ultimate
+                 * character could be considered a meta-symbol by the regex
+                 * compiler).  Instead, they are converted to the \N{U+...}
+                 * form to get the value from the charnames that is in effect
+                 * right now, while preserving the fact that it was a named
+                 * character, so that the regex compiler knows this.
                  *
 		 * The structure of this section of code (besides checking for
 		 * errors and upgrading to utf8) is:
@@ -4443,8 +4445,8 @@ Perl_filter_add(pTHX_ filter_t funcp, SV *datasv)
 		    PL_parser->last_uni = buf + last_uni_pos;
 		if (PL_parser->last_lop)
 		    PL_parser->last_lop = buf + last_lop_pos;
-		SvLEN(linestr) = SvCUR(linestr);
-		SvCUR(linestr) = s-SvPVX(linestr);
+		SvLEN_set(linestr, SvCUR(linestr));
+		SvCUR_set(linestr, s - SvPVX(linestr));
 		PL_parser->filtered = 1;
 		break;
 	    }
@@ -5292,9 +5294,10 @@ Perl_yylex(pTHX)
 		    sv_catpvs(PL_linestr,"chomp;");
 		if (PL_minus_a) {
 		    if (PL_minus_F) {
-			if ((*PL_splitstr == '/' || *PL_splitstr == '\''
-			     || *PL_splitstr == '"')
-			      && strchr(PL_splitstr + 1, *PL_splitstr))
+                        if (   (   *PL_splitstr == '/'
+                                || *PL_splitstr == '\''
+                                || *PL_splitstr == '"')
+                            && strchr(PL_splitstr + 1, *PL_splitstr))
 			    Perl_sv_catpvf(aTHX_ PL_linestr, "our @F=split(%s);", PL_splitstr);
 			else {
 			    /* "q\0${splitstr}\0" is legal perl. Yes, even NUL
@@ -5344,10 +5347,10 @@ Perl_yylex(pTHX)
 	    /* If it looks like the start of a BOM or raw UTF-16,
 	     * check if it in fact is. */
 	    if (bof && PL_rsfp
-                && (*s == 0
+                && (   *s == 0
                     || *(U8*)s == BOM_UTF8_FIRST_BYTE
-                        || *(U8*)s >= 0xFE
-                        || s[1] == 0))
+                    || *(U8*)s >= 0xFE
+                    || s[1] == 0))
             {
 		Off_t offset = (IV)PerlIO_tell(PL_rsfp);
 		bof = (offset == (Off_t)SvCUR(PL_linestr));
@@ -5604,10 +5607,6 @@ Perl_yylex(pTHX)
                 d++;
             if (d < PL_bufend)
                 d++;
-            else if (d > PL_bufend)
-                /* Found by Ilya: feed random input to Perl. */
-                Perl_croak(aTHX_ "panic: input overflow, %p > %p",
-                           d, PL_bufend);
             s = d;
             if (in_comment && d == PL_bufend
                 && PL_lex_state == LEX_INTERPNORMAL
@@ -5630,9 +5629,6 @@ Perl_yylex(pTHX)
                     if (s < PL_bufend)
                         incline(s);
                 }
-            else if (s > PL_bufend)
-                /* Found by Ilya: feed random input to Perl. */
-                Perl_croak(aTHX_ "panic: input overflow");
 	}
 	goto retry;
     case '-':
@@ -6426,8 +6422,9 @@ Perl_yylex(pTHX)
                 && isALPHA(tmp)
                 && (s == PL_linestart+1 || s[-2] == '\n') )
             {
-                if ((PL_in_eval && !PL_rsfp && !PL_parser->filtered)
-                    || PL_lex_state != LEX_NORMAL) {
+                if (   (PL_in_eval && !PL_rsfp && !PL_parser->filtered)
+                    || PL_lex_state != LEX_NORMAL)
+                {
                     d = PL_bufend;
                     while (s < d) {
                         if (*s++ == '\n') {
@@ -6684,28 +6681,28 @@ Perl_yylex(pTHX)
 		    PL_tokenbuf[0] = '%';
 		    if (strEQ(PL_tokenbuf+1, "SIG")  && ckWARN(WARN_SYNTAX)
 			&& (t = strchr(s, '}')) && (t = strchr(t, '=')))
-			{
-			    char tmpbuf[sizeof PL_tokenbuf];
-			    do {
-				t++;
-			    } while (isSPACE(*t));
-		            if (isIDFIRST_lazy_if_safe(t, PL_bufend, UTF)) {
-				STRLEN len;
-				t = scan_word(t, tmpbuf, sizeof tmpbuf, TRUE,
-					      &len);
-				while (isSPACE(*t))
-				    t++;
-                                if (  *t == ';'
-                                    && get_cvn_flags(tmpbuf, len, UTF
-                                                                  ? SVf_UTF8
-                                                                  : 0))
-                                {
-				    Perl_warner(aTHX_ packWARN(WARN_SYNTAX),
-					"You need to quote \"%" UTF8f "\"",
-					 UTF8fARG(UTF, len, tmpbuf));
-                                }
-			    }
-			}
+                    {
+                        char tmpbuf[sizeof PL_tokenbuf];
+                        do {
+                            t++;
+                        } while (isSPACE(*t));
+                        if (isIDFIRST_lazy_if_safe(t, PL_bufend, UTF)) {
+                            STRLEN len;
+                            t = scan_word(t, tmpbuf, sizeof tmpbuf, TRUE,
+                                            &len);
+                            while (isSPACE(*t))
+                                t++;
+                            if (  *t == ';'
+                                && get_cvn_flags(tmpbuf, len, UTF
+                                                                ? SVf_UTF8
+                                                                : 0))
+                            {
+                                Perl_warner(aTHX_ packWARN(WARN_SYNTAX),
+                                    "You need to quote \"%" UTF8f "\"",
+                                        UTF8fARG(UTF, len, tmpbuf));
+                            }
+                        }
+                    }
 		}
 	    }
 
@@ -6856,7 +6853,7 @@ Perl_yylex(pTHX)
 	}
 	if (PL_expect == XSTATE && s[1] == '.' && s[2] == '.') {
 	    s += 3;
-	    OPERATOR(YADAYADA);
+	    TERM(YADAYADA);
 	}
 	if (PL_expect == XOPERATOR || !isDIGIT(s[1])) {
 	    char tmp = *s++;
@@ -9918,9 +9915,7 @@ S_scan_heredoc(pTHX_ char *s)
 	if (! isWORDCHAR_lazy_if_safe(s, PL_bufend, UTF))
 	    Perl_croak(aTHX_ "Use of bare << to mean <<\"\" is forbidden");
 	peek = s;
-        while (
-               isWORDCHAR_lazy_if_safe(peek, PL_bufend, UTF))
-        {
+        while (isWORDCHAR_lazy_if_safe(peek, PL_bufend, UTF)) {
 	    peek += UTF ? UTF8SKIP(peek) : 1;
 	}
 	len = (peek - s >= e - d) ? (e - d) : (peek - s);
@@ -11699,7 +11694,9 @@ S_swallow_bom(pTHX_ U8 *s)
 		/* diag_listed_as: Unsupported script encoding %s */
 		Perl_croak(aTHX_ "Unsupported script encoding UTF-32LE");
 #ifndef PERL_NO_UTF16_FILTER
+#ifdef DEBUGGING
 	    if (DEBUG_p_TEST || DEBUG_T_TEST) PerlIO_printf(Perl_debug_log, "UTF-16LE script encoding (BOM)\n");
+#endif
 	    s += 2;
 	    if (PL_bufend > (char*)s) {
 		s = add_utf16_textfilter(s, TRUE);
@@ -11713,7 +11710,9 @@ S_swallow_bom(pTHX_ U8 *s)
     case 0xFE:
 	if (s[1] == 0xFF) {   /* UTF-16 big-endian? */
 #ifndef PERL_NO_UTF16_FILTER
+#ifdef DEBUGGING
 	    if (DEBUG_p_TEST || DEBUG_T_TEST) PerlIO_printf(Perl_debug_log, "UTF-16BE script encoding (BOM)\n");
+#endif
 	    s += 2;
 	    if (PL_bufend > (char *)s) {
 		s = add_utf16_textfilter(s, FALSE);
@@ -11727,7 +11726,9 @@ S_swallow_bom(pTHX_ U8 *s)
     case BOM_UTF8_FIRST_BYTE: {
         const STRLEN len = sizeof(BOM_UTF8_TAIL) - 1; /* Exclude trailing NUL */
         if (slen > len && memEQ(s+1, BOM_UTF8_TAIL, len)) {
+#ifdef DEBUGGING
             if (DEBUG_p_TEST || DEBUG_T_TEST) PerlIO_printf(Perl_debug_log, "UTF-8 script encoding (BOM)\n");
+#endif
             s += len + 1;                      /* UTF-8 */
         }
         break;
@@ -11746,7 +11747,9 @@ S_swallow_bom(pTHX_ U8 *s)
 		   * 00 xx 00 xx
 		   * are a good indicator of UTF-16BE. */
 #ifndef PERL_NO_UTF16_FILTER
+#ifdef DEBUGGING
 		  if (DEBUG_p_TEST || DEBUG_T_TEST) PerlIO_printf(Perl_debug_log, "UTF-16BE script encoding (no BOM)\n");
+#endif
 		  s = add_utf16_textfilter(s, FALSE);
 #else
 		  /* diag_listed_as: Unsupported script encoding %s */
@@ -11762,7 +11765,9 @@ S_swallow_bom(pTHX_ U8 *s)
 		   * xx 00 xx 00
 		   * are a good indicator of UTF-16LE. */
 #ifndef PERL_NO_UTF16_FILTER
+#ifdef DEBUGGING
 	      if (DEBUG_p_TEST || DEBUG_T_TEST) PerlIO_printf(Perl_debug_log, "UTF-16LE script encoding (no BOM)\n");
+#endif
 	      s = add_utf16_textfilter(s, TRUE);
 #else
 	      /* diag_listed_as: Unsupported script encoding %s */

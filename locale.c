@@ -1195,40 +1195,15 @@ Perl_langinfo(const int item)
 #endif
 {
     bool toggle = TRUE;
-
-#if defined(HAS_NL_LANGINFO)
-#  if ! defined(USE_ITHREADS)
-
-    /* Single-thread, and nl_langinfo() is available.  Call it, switching to
-     * underlying LC_NUMERIC for those items dependent on it */
-
-    const char * retval;
-
-    if (toggle) {
-        if (item == PERL_RADIXCHAR || item == PERL_THOUSEP) {
-            setlocale(LC_NUMERIC, PL_numeric_name);
-        }
-        else {
-            toggle = FALSE;
-        }
-    }
-
-    retval = nl_langinfo(item);
-
-    if (toggle) {
-        setlocale(LC_NUMERIC, "C");
-    }
-
-    return retval;
-
-
-#  else
-
-    /* Multi-threaded, with native nl_langinfo().  Use it, copying result to
-     * per-thread buffer, and toggling LC_NUMERIC if necessary, all within a
-     * crtical section */
-
     dTHX;
+
+#if defined(HAS_NL_LANGINFO) /* nl_langinfo() is available.  */
+#if   ! defined(HAS_POSIX_2008_LOCALE)
+
+    /* Here, use plain nl_langinfo(), switching to the underlying LC_NUMERIC
+     * for those items dependent on it.  This must be copied to a buffer before
+     * switching back, as some systems destroy the buffer when setlocale() is
+     * called */
 
     LOCALE_LOCK;
 
@@ -1251,11 +1226,33 @@ Perl_langinfo(const int item)
 
     return PL_langinfo_buf;
 
-#  endif
+#  else /* Use nl_langinfo_l(), avoiding both a mutex and changing the locale */
+
+    bool do_free = FALSE;
+    locale_t cur = uselocale((locale_t) 0);
+
+    if (cur == LC_GLOBAL_LOCALE) {
+        cur = duplocale(LC_GLOBAL_LOCALE);
+        do_free = TRUE;
+    }
+
+    if (   toggle
+        && (item == PERL_RADIXCHAR || item == PERL_THOUSEP))
+    {
+        cur = newlocale(LC_NUMERIC_MASK, PL_numeric_name, cur);
+        do_free = TRUE;
+    }
+
+    save_to_buffer(nl_langinfo_l(item, cur),
+                   &PL_langinfo_buf, &PL_langinfo_bufsize, 0);
+    if (do_free) {
+        freelocale(cur);
+    }
+
+    return PL_langinfo_buf;
+
+#    endif
 #else   /* Below, emulate nl_langinfo as best we can */
-
-    dTHX;
-
 #  ifdef HAS_LOCALECONV
 
     const struct lconv* lc;

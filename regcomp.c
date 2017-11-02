@@ -628,7 +628,7 @@ static const scan_data_t zero_scan_data = {
     UTF8fARG(UTF,                                                           \
              (xI(xC) > eC) /* Don't run off end */                          \
               ? eC - sC   /* Length before the <--HERE */                   \
-              : xI_offset(xC),                                              \
+              : ( __ASSERT_(xI_offset(xC) >= 0) xI_offset(xC) ),            \
              sC),         /* The input pattern printed up to the <--HERE */ \
     UTF8fARG(UTF,                                                           \
              (xI(xC) > eC) ? 0 : eC - xI(xC), /* Length after <--HERE */    \
@@ -4892,6 +4892,7 @@ S_study_chunk(pTHX_ RExC_state_t *pRExC_state, regnode **scanp,
 	else if (OP(scan) == EXACT || OP(scan) == EXACTL) {
 	    SSize_t l = STR_LEN(scan);
 	    UV uc;
+            assert(l);
 	    if (UTF) {
 		const U8 * const s = (U8*)STRING(scan);
 		uc = utf8_to_uvchr_buf(s, s + l, NULL);
@@ -6906,7 +6907,7 @@ Perl_re_op_compile(pTHX_ SV ** const patternp, int pat_count,
         if (   ! dump_len_string
             || ! grok_atoUV(dump_len_string, (UV *)&PL_dump_re_max_len, NULL))
         {
-            PL_dump_re_max_len = 0;
+            PL_dump_re_max_len = 60;    /* A reasonable default */
         }
 #endif
     }
@@ -7035,7 +7036,7 @@ Perl_re_op_compile(pTHX_ SV ** const patternp, int pat_count,
     });
     DEBUG_COMPILE_r({
             SV *dsv= sv_newmortal();
-            RE_PV_QUOTED_DECL(s, RExC_utf8, dsv, exp, plen, 60);
+            RE_PV_QUOTED_DECL(s, RExC_utf8, dsv, exp, plen, PL_dump_re_max_len);
             Perl_re_printf( aTHX_  "%sCompiling REx%s %s\n",
                           PL_colors[4],PL_colors[5],s);
         });
@@ -12109,22 +12110,22 @@ S_grok_bslash_N(pTHX_ RExC_state_t *pRExC_state,
         /* Convert code point from hex */
 	length_of_hex = (STRLEN)(endchar - RExC_parse);
 	grok_hex_flags = PERL_SCAN_ALLOW_UNDERSCORES
-                           | PERL_SCAN_DISALLOW_PREFIX
+                       | PERL_SCAN_DISALLOW_PREFIX
 
-                             /* No errors in the first pass (See [perl
-                              * #122671].)  We let the code below find the
-                              * errors when there are multiple chars. */
-                           | ((SIZE_ONLY)
-                              ? PERL_SCAN_SILENT_ILLDIGIT
-                              : 0);
+                           /* No errors in the first pass (See [perl
+                            * #122671].)  We let the code below find the
+                            * errors when there are multiple chars. */
+                       | ((SIZE_ONLY)
+                          ? PERL_SCAN_SILENT_ILLDIGIT
+                          : 0);
 
         /* This routine is the one place where both single- and double-quotish
          * \N{U+xxxx} are evaluated.  The value is a Unicode code point which
          * must be converted to native. */
 	*code_point_p = UNI_TO_NATIVE(grok_hex(RExC_parse,
-                                         &length_of_hex,
-                                         &grok_hex_flags,
-                                         NULL));
+                                               &length_of_hex,
+                                               &grok_hex_flags,
+                                               NULL));
 
 	/* The tokenizer should have guaranteed validity, but it's possible to
          * bypass it by using single quoting, so check.  Don't do the check
@@ -12165,7 +12166,7 @@ S_grok_bslash_N(pTHX_ RExC_state_t *pRExC_state,
         }
 
         /* Fail if caller doesn't want to handle a multi-code-point sequence.
-         * But don't backup up the pointer if the caller want to know how many
+         * But don't backup up the pointer if the caller wants to know how many
          * code points there are (they can then handle things) */
         if (! node_p) {
             if (! cp_count) {
@@ -12215,17 +12216,7 @@ S_grok_bslash_N(pTHX_ RExC_state_t *pRExC_state,
         RExC_recode_x_to_native = 1;
 #endif
 
-        if (node_p) {
-            if (!(*node_p = reg(pRExC_state, 1, &flags, depth+1))) {
-                if (flags & (RESTART_PASS1|NEED_UTF8)) {
-                    *flagp = flags & (RESTART_PASS1|NEED_UTF8);
-                    return FALSE;
-                }
-                FAIL2("panic: reg returned NULL to grok_bslash_N, flags=%#" UVxf,
-                    (UV) flags);
-            }
-            *flagp |= flags&(HASWIDTH|SPSTART|SIMPLE|POSTPONED);
-        }
+        *node_p = reg(pRExC_state, 1, &flags, depth+1);
 
         /* Restore the saved values */
 	RExC_start = RExC_adjusted_start = save_start;
@@ -12234,8 +12225,18 @@ S_grok_bslash_N(pTHX_ RExC_state_t *pRExC_state,
 #ifdef EBCDIC
         RExC_recode_x_to_native = 0;
 #endif
-
         SvREFCNT_dec_NN(substitute_parse);
+
+        if (! *node_p) {
+            if (flags & (RESTART_PASS1|NEED_UTF8)) {
+                *flagp = flags & (RESTART_PASS1|NEED_UTF8);
+                return FALSE;
+            }
+            FAIL2("panic: reg returned NULL to grok_bslash_N, flags=%#" UVxf,
+                (UV) flags);
+        }
+        *flagp |= flags&(HASWIDTH|SPSTART|SIMPLE|POSTPONED);
+
         nextchar(pRExC_state);
 
         return TRUE;
@@ -13558,7 +13559,7 @@ S_regatom(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth)
                      * character we are appending, hence we can delay getting
                      * its representation until PASS2. */
                     if (SIZE_ONLY) {
-                        if (UTF) {
+                        if (UTF && ! UVCHR_IS_INVARIANT(ender)) {
                             const STRLEN unilen = UVCHR_SKIP(ender);
                             s += unilen;
 
@@ -13576,7 +13577,7 @@ S_regatom(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth)
                         }
                     } else { /* PASS2 */
                       not_fold_common:
-                        if (UTF) {
+                        if (UTF && ! UVCHR_IS_INVARIANT(ender)) {
                             U8 * new_s = uvchr_to_utf8((U8*)s, ender);
                             len += (char *) new_s - s - 1;
                             s = (char *) new_s;
@@ -14874,9 +14875,9 @@ S_handle_regex_sets(pTHX_ RExC_state_t *pRExC_state, SV** return_invlist,
                                        'stack' of where the undealt-with left
                                        parens would be if they were actually
                                        put there */
-    /* The 'VOL' (expanding to 'volatile') is a workaround for an optimiser bug
+    /* The 'volatile' is a workaround for an optimiser bug
      * in Solaris Studio 12.3. See RT #127455 */
-    VOL IV fence = 0;               /* Position of where most recent undealt-
+    volatile IV fence = 0;          /* Position of where most recent undealt-
                                        with left paren in stack is; -1 if none.
                                      */
     STRLEN len;                     /* Temporary */
@@ -18980,7 +18981,7 @@ Perl_regdump(pTHX_ const regexp *r)
             RE_PV_QUOTED_DECL(s, 0, dsv,
                             SvPVX_const(r->substrs->data[i].substr),
                             RE_SV_DUMPLEN(r->substrs->data[i].substr),
-                            30);
+                            PL_dump_re_max_len);
             Perl_re_printf( aTHX_
                           "%s %s%s at %" IVdf "..%" UVuf " ",
                           i ? "floating" : "anchored",
@@ -19130,7 +19131,8 @@ Perl_regprop(pTHX_ const regexp *prog, SV *sv, const regnode *o, const regmatch_
 	 * is a crude hack but it may be the best for now since
 	 * we have no flag "this EXACTish node was UTF-8"
 	 * --jhi */
-	pv_pretty(sv, STRING(o), STR_LEN(o), 60, PL_colors[0], PL_colors[1],
+	pv_pretty(sv, STRING(o), STR_LEN(o), PL_dump_re_max_len,
+                  PL_colors[0], PL_colors[1],
 		  PERL_PV_ESCAPE_UNI_DETECT |
 		  PERL_PV_ESCAPE_NONASCII   |
 		  PERL_PV_PRETTY_ELLIPSES   |
@@ -19354,7 +19356,7 @@ Perl_regprop(pTHX_ const regexp *prog, SV *sv, const regnode *o, const regmatch_
             SV* contents;
 
             /* See if truncation size is overridden */
-            const STRLEN dump_len = (PL_dump_re_max_len)
+            const STRLEN dump_len = (PL_dump_re_max_len > 256)
                                     ? PL_dump_re_max_len
                                     : 256;
 
@@ -19481,7 +19483,7 @@ Perl_re_intuit_string(pTHX_ REGEXP * const r)
 		      PL_colors[5],PL_colors[0],
 		      s,
 		      PL_colors[1],
-		      (strlen(s) > 60 ? "..." : ""));
+		      (strlen(s) > PL_dump_re_max_len ? "..." : ""));
 	} );
 
     /* use UTF8 check substring if regexp pattern itself is in UTF8 */
@@ -19666,7 +19668,7 @@ Perl_regfree_internal(pTHX_ REGEXP * const rx)
 	{
 	    SV *dsv= sv_newmortal();
             RE_PV_QUOTED_DECL(s, RX_UTF8(rx),
-                dsv, RX_PRECOMP(rx), RX_PRELEN(rx), 60);
+                dsv, RX_PRECOMP(rx), RX_PRELEN(rx), PL_dump_re_max_len);
             Perl_re_printf( aTHX_ "%sFreeing REx:%s %s\n",
                 PL_colors[4],PL_colors[5],s);
         }
@@ -20797,7 +20799,7 @@ S_dumpuntil(pTHX_ const regexp *r, const regnode *start, const regnode *node,
                     indent+3,
                     elem_ptr
                     ? pv_pretty(sv, SvPV_nolen_const(*elem_ptr),
-                                SvCUR(*elem_ptr), 60,
+                                SvCUR(*elem_ptr), PL_dump_re_max_len,
                                 PL_colors[0], PL_colors[1],
                                 (SvUTF8(*elem_ptr)
                                  ? PERL_PV_ESCAPE_UNI

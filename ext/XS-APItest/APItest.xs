@@ -1422,7 +1422,6 @@ test_valid_utf8_to_uvchr(s)
     PREINIT:
         STRLEN retlen;
         UV ret;
-        STRLEN slen;
 
     CODE:
         /* Call utf8n_to_uvchr() with the inputs.  It always asks for the
@@ -1433,8 +1432,7 @@ test_valid_utf8_to_uvchr(s)
         RETVAL = newAV();
         sv_2mortal((SV*)RETVAL);
 
-        ret
-         = valid_utf8_to_uvchr((U8*) SvPV(s, slen), &retlen);
+        ret = valid_utf8_to_uvchr((U8*) SvPV_nolen(s), &retlen);
 
         /* Returns the return value in [0]; <retlen> in [1] */
         av_push(RETVAL, newSVuv(ret));
@@ -3340,13 +3338,13 @@ test_coplabel()
         cop = &PL_compiling;
         Perl_cop_store_label(aTHX_ cop, "foo", 3, 0);
         label = Perl_cop_fetch_label(aTHX_ cop, &len, &utf8);
-        if (strcmp(label,"foo")) croak("fail # cop_fetch_label label");
+        if (strNE(label,"foo")) croak("fail # cop_fetch_label label");
         if (len != 3) croak("fail # cop_fetch_label len");
         if (utf8) croak("fail # cop_fetch_label utf8");
         /* SMALL GERMAN UMLAUT A */
         Perl_cop_store_label(aTHX_ cop, "fo\xc3\xa4", 4, SVf_UTF8);
         label = Perl_cop_fetch_label(aTHX_ cop, &len, &utf8);
-        if (strcmp(label,"fo\xc3\xa4")) croak("fail # cop_fetch_label label");
+        if (strNE(label,"fo\xc3\xa4")) croak("fail # cop_fetch_label label");
         if (len != 4) croak("fail # cop_fetch_label len");
         if (!utf8) croak("fail # cop_fetch_label utf8");
 
@@ -3477,7 +3475,7 @@ test_op_list()
 #define iv_op(iv) newSVOP(OP_CONST, 0, newSViv(iv))
 #define check_op(o, expect) \
     do { \
-	if (strcmp(test_op_list_describe(o), (expect))) \
+	if (strNE(test_op_list_describe(o), (expect))) \
 	    croak("fail %s %s", test_op_list_describe(o), (expect)); \
     } while(0)
 	a = op_append_elem(OP_LIST, NULL, NULL);
@@ -4273,6 +4271,28 @@ string_without_null(SV *sv)
         const char *s = SvPV(sv, len);
         RETVAL = newSVpvn_flags(s, len, SvUTF8(sv));
         *SvEND(RETVAL) = 0xff;
+    }
+    OUTPUT:
+        RETVAL
+
+CV *
+get_cv(SV *sv)
+    CODE:
+    {
+        STRLEN len;
+        const char *s = SvPV(sv, len);
+        RETVAL = get_cvn_flags(s, len, 0);
+    }
+    OUTPUT:
+        RETVAL
+
+CV *
+get_cv_flags(SV *sv, UV flags)
+    CODE:
+    {
+        STRLEN len;
+        const char *s = SvPV(sv, len);
+        RETVAL = get_cvn_flags(s, len, flags);
     }
     OUTPUT:
         RETVAL

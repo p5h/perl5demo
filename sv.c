@@ -4696,11 +4696,13 @@ Perl_sv_setsv_flags(pTHX_ SV *dstr, SV* sstr, const I32 flags)
             ) {
             /* Either it's a shared hash key, or it's suitable for
                copy-on-write.  */
+#ifdef DEBUGGING
             if (DEBUG_C_TEST) {
                 PerlIO_printf(Perl_debug_log, "Copy on write: sstr --> dstr\n");
                 sv_dump(sstr);
                 sv_dump(dstr);
             }
+#endif
 #ifdef PERL_ANY_COW
             if (!(sflags & SVf_IsCOW)) {
                     SvIsCOW_on(sstr);
@@ -4874,7 +4876,7 @@ Perl_sv_setsv_cow(pTHX_ SV *dstr, SV *sstr)
 #endif
 
     PERL_ARGS_ASSERT_SV_SETSV_COW;
-
+#ifdef DEBUGGING
     if (DEBUG_C_TEST) {
 	PerlIO_printf(Perl_debug_log, "Fast copy on write: %p -> %p\n",
 		      (void*)sstr, (void*)dstr);
@@ -4882,7 +4884,7 @@ Perl_sv_setsv_cow(pTHX_ SV *dstr, SV *sstr)
 	if (dstr)
 		    sv_dump(dstr);
     }
-
+#endif
     if (dstr) {
 	if (SvTHINKFIRST(dstr))
 	    sv_force_normal_flags(dstr, SV_COW_DROP_PV);
@@ -4929,9 +4931,10 @@ Perl_sv_setsv_cow(pTHX_ SV *dstr, SV *sstr)
 	SvUTF8_on(dstr);
     SvLEN_set(dstr, len);
     SvCUR_set(dstr, cur);
-    if (DEBUG_C_TEST) {
-	sv_dump(dstr);
-    }
+#ifdef DEBUGGING
+    if (DEBUG_C_TEST)
+		sv_dump(dstr);
+#endif
     return dstr;
 }
 #endif
@@ -5217,12 +5220,14 @@ S_sv_uncow(pTHX_ SV * const sv, const U32 flags)
 	const STRLEN len = SvLEN(sv);
 	const STRLEN cur = SvCUR(sv);
 
+#ifdef DEBUGGING
         if (DEBUG_C_TEST) {
                 PerlIO_printf(Perl_debug_log,
                               "Copy on write: Force normal %ld\n",
                               (long) flags);
                 sv_dump(sv);
         }
+#endif
         SvIsCOW_off(sv);
 # ifdef PERL_COPY_ON_WRITE
 	if (len) {
@@ -5262,9 +5267,10 @@ S_sv_uncow(pTHX_ SV * const sv, const U32 flags)
 	    } else {
 		unshare_hek(SvSHARED_HEK_FROM_PV(pvx));
 	    }
-            if (DEBUG_C_TEST) {
+#ifdef DEBUGGING
+            if (DEBUG_C_TEST)
                 sv_dump(sv);
-            }
+#endif
 	}
 #else
 	    const char * const pvx = SvPVX_const(sv);
@@ -6807,10 +6813,12 @@ Perl_sv_clear(pTHX_ SV *const orig_sv)
 		     && !(IoFLAGS(sv) & IOf_FAKE_DIRP)))
 	    {
 		if (SvIsCOW(sv)) {
+#ifdef DEBUGGING
 		    if (DEBUG_C_TEST) {
 			PerlIO_printf(Perl_debug_log, "Copy on write: clear\n");
 			sv_dump(sv);
 		    }
+#endif
 		    if (SvLEN(sv)) {
 			if (CowREFCNT(sv)) {
 			    sv_buf_to_rw(sv);
@@ -11634,8 +11642,7 @@ S_format_hexfp(pTHX_ char * const buf, const STRLEN bufsize, const char c,
     /* In this case there is an implicit bit,
      * and therefore the exponent is shifted by one. */
     exponent--;
-#  else
-#    ifdef NV_X86_80_BIT
+#  elif defined(NV_X86_80_BIT)
     if (subnormal) {
         /* The subnormals of the x86-80 have a base exponent of -16382,
          * (while the physical exponent bits are zero) but the frexp()
@@ -11649,7 +11656,6 @@ S_format_hexfp(pTHX_ char * const buf, const STRLEN bufsize, const char c,
     } else {
         exponent -= 4;
     }
-#    endif
     /* TBD: other non-implicit-bit platforms than the x86-80. */
 #  endif
 #endif
@@ -12370,7 +12376,10 @@ Perl_sv_vcatpvfn_flags(pTHX_ SV *const sv, const char *const pat, const STRLEN p
 	    if (args) {
 		eptr = va_arg(*args, char*);
 		if (eptr)
-		    elen = strlen(eptr);
+                    if (has_precis)
+                        elen = my_strnlen(eptr, precis);
+                    else
+                        elen = strlen(eptr);
 		else {
 		    eptr = (char *)nullstr;
 		    elen = sizeof nullstr - 1;
@@ -13202,7 +13211,7 @@ Perl_sv_vcatpvfn_flags(pTHX_ SV *const sv, const char *const pat, const STRLEN p
                         ? my_snprintf(PL_efloatbuf, PL_efloatsize, ptr, fv)
                         : my_snprintf(PL_efloatbuf, PL_efloatsize, ptr, (double)fv));
 #else
-                elen = my_sprintf(PL_efloatbuf, ptr, fv);
+                elen = my_snprintf(PL_efloatbuf, PL_efloatsize, ptr, fv);
 #endif
                 GCC_DIAG_RESTORE;
 	    }
@@ -14285,6 +14294,7 @@ S_sv_dup_common(pTHX_ const SV *const sstr, CLONE_PARAMS *const param)
 		else
 		    LvTARG(dstr) = sv_dup_inc(LvTARG(dstr), param);
 		if (isREGEXP(sstr)) goto duprex;
+		/* FALLTHROUGH */
 	    case SVt_PVGV:
 		/* non-GP case already handled above */
 		if(isGV_with_GP(sstr)) {
@@ -16986,6 +16996,9 @@ Perl_report_uninit(pTHX_ const SV *uninit_sv)
     if (PL_op) {
 	desc = PL_op->op_type == OP_STRINGIFY && PL_op->op_folded
 		? "join or string"
+                : PL_op->op_type == OP_MULTICONCAT
+                    && (PL_op->op_private & OPpMULTICONCAT_FAKE)
+                ? "sprintf"
 		: OP_DESC(PL_op);
 	if (uninit_sv && PL_curpad) {
 	    varname = find_uninit_var(PL_op, uninit_sv, 0, &desc);
