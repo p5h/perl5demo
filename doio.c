@@ -261,7 +261,7 @@ Perl_do_open6(pTHX_ GV *gv, const char *oname, STRLEN len,
             STRLEN nlen = 0;
 	    /* New style explicit name, type is just mode and layer info */
 #ifdef USE_STDIO
-	    if (SvROK(*svp) && !strchr(oname,'&')) {
+	    if (SvROK(*svp) && !memchr(oname, '&', len)) {
 		if (ckWARN(WARN_IO))
 		    Perl_warner(aTHX_ packWARN(WARN_IO),
 			    "Can't open a reference");
@@ -1630,7 +1630,7 @@ Perl_mode_from_discipline(pTHX_ const char *s, STRLEN len)
 	    else {
 		const char *end;
   fail_discipline:
-		end = strchr(s+1, ':');
+		end = (char *) memchr(s+1, ':', len);
 		if (!end)
 		    end = s+len;
 #ifndef PERLIO_LAYERS
@@ -2003,7 +2003,7 @@ Perl_do_exec3(pTHX_ const char *incmd, int fd, int do_report)
     {
         char flags[PERL_FLAGS_MAX];
 	if (strnEQ(cmd,PL_cshname,PL_cshlen) &&
-	    strEQs(cmd+PL_cshlen," -c")) {
+	    strBEGINs(cmd+PL_cshlen," -c")) {
           my_strlcpy(flags, "-c", PERL_FLAGS_MAX);
 	  s = cmd+PL_cshlen+3;
 	  if (*s == 'f') {
@@ -2039,7 +2039,7 @@ Perl_do_exec3(pTHX_ const char *incmd, int fd, int do_report)
     if (*cmd == '.' && isSPACE(cmd[1]))
 	goto doshell;
 
-    if (strEQs(cmd,"exec") && isSPACE(cmd[4]))
+    if (strBEGINs(cmd,"exec") && isSPACE(cmd[4]))
 	goto doshell;
 
     s = cmd;

@@ -4678,7 +4678,7 @@ S_move_proto_attr(pTHX_ OP **proto, OP **attrs, const GV * name,
     o = *attrs;
     if (o->op_type == OP_CONST) {
         pv = SvPV(cSVOPo_sv, pvlen);
-        if (pvlen >= 10 && memEQ(pv, "prototype(", 10)) {
+        if (memBEGINs(pv, pvlen, "prototype(")) {
             SV * const tmpsv = newSVpvn_flags(pv + 10, pvlen - 11, SvUTF8(cSVOPo_sv));
             SV ** const tmpo = cSVOPx_svp(o);
             SvREFCNT_dec(cSVOPo_sv);
@@ -4694,7 +4694,7 @@ S_move_proto_attr(pTHX_ OP **proto, OP **attrs, const GV * name,
         for (o = OpSIBLING(lasto); o; o = OpSIBLING(o)) {
             if (o->op_type == OP_CONST) {
                 pv = SvPV(cSVOPo_sv, pvlen);
-                if (pvlen >= 10 && memEQ(pv, "prototype(", 10)) {
+                if (memBEGINs(pv, pvlen, "prototype(")) {
                     SV * const tmpsv = newSVpvn_flags(pv + 10, pvlen - 11, SvUTF8(cSVOPo_sv));
                     SV ** const tmpo = cSVOPx_svp(o);
                     SvREFCNT_dec(cSVOPo_sv);
@@ -9672,7 +9672,7 @@ Perl_newATTRSUB_x(pTHX_ I32 floor, OP *o, OP *proto, OP *attrs,
 
 	PL_compcv = 0;
 	if (name && block) {
-	    const char *s = strrchr(name, ':');
+	    const char *s = (char *) my_memrchr(name, ':', namlen);
 	    s = s ? s+1 : name;
 	    if (strEQ(s, "BEGIN")) {
 		if (PL_in_eval & EVAL_KEEPERR)
@@ -11804,7 +11804,9 @@ Perl_ck_method(pTHX_ OP *o)
     sv = kSVOP->op_sv;
 
     /* replace ' with :: */
-    while ((compatptr = strchr(SvPVX(sv), '\''))) {
+    while ((compatptr = (char *) memchr(SvPVX(sv), '\'',
+                                        SvEND(sv) - SvPVX(sv) )))
+    {
         *compatptr = ':';
         sv_insert(sv, compatptr - SvPVX_const(sv), 0, ":", 1);
     }
@@ -11825,13 +11827,13 @@ Perl_ck_method(pTHX_ OP *o)
         return newMETHOP_named(OP_METHOD_NAMED, 0, methsv);
     }
 
-    if (nsplit == 7 && memEQ(method, "SUPER::", nsplit)) { /* $proto->SUPER::method() */
+    if (memEQs(method, nsplit, "SUPER::")) { /* $proto->SUPER::method() */
         op_free(o);
         return newMETHOP_named(OP_METHOD_SUPER, 0, methsv);
     }
 
     /* $proto->MyClass::method() and $proto->MyClass::SUPER::method() */
-    if (nsplit >= 9 && strnEQ(method+nsplit-9, "::SUPER::", 9)) {
+    if (nsplit >= 9 && strBEGINs(method+nsplit-9, "::SUPER::")) {
         rclass = newSVpvn_share(method, utf8*(nsplit-9), 0);
         new_op = newMETHOP_named(OP_METHOD_REDIR_SUPER, 0, methsv);
     } else {
@@ -12798,7 +12800,7 @@ Perl_ck_entersub_args_proto(pTHX_ OP *entersubop, GV *namegv, SV *protosv)
 		switch (*proto++) {
 		    case '[':
 			if (contextclass++ == 0) {
-			    e = strchr(proto, ']');
+			    e = (char *) memchr(proto, ']', proto_end - proto);
 			    if (!e || e == proto)
 				goto oops;
 			}

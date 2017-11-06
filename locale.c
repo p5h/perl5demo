@@ -1689,7 +1689,6 @@ Perl_init_i18nl10n(pTHX_ int printwarn)
     const char * const lang       = savepv(PerlEnv_getenv("LANG"));
     bool setlocale_failure = FALSE;
     unsigned int i;
-    char *p;
 
     /* A later getenv() could zap this, so only use here */
     const char * const bad_lang_use_once = PerlEnv_getenv("PERL_BADLANG");
@@ -1969,14 +1968,27 @@ Perl_init_i18nl10n(pTHX_ int printwarn)
 
 #if defined(USE_ENVIRON_ARRAY)
                 {
-                char **e;
-                for (e = environ; *e; e++) {
-                    if (strEQs(*e, "LC_")
-                            && strNEs(*e, "LC_ALL=")
-                            && (p = strchr(*e, '=')))
-                        PerlIO_printf(Perl_error_log, "\t%.*s = \"%s\",\n",
-                                        (int)(p - *e), *e, p + 1);
-                }
+                    char **e;
+
+                    /* Look through the environment for any variables of the
+                     * form qr/ ^ LC_ [A-Z]+ = /x, except LC_ALL which was
+                     * already handled above.  These are assumed to be locale
+                     * settings.  Output them and their values. */
+                    for (e = environ; *e; e++) {
+                        const STRLEN prefix_len = sizeof("LC_") - 1;
+                        STRLEN uppers_len;
+
+                        if (     strBEGINs(*e, "LC_")
+                            && ! strBEGINs(*e, "LC_ALL=")
+                            && (uppers_len = strspn(*e + prefix_len,
+                                             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+                            && ((*e)[prefix_len + uppers_len] == '='))
+                        {
+                            PerlIO_printf(Perl_error_log, "\t%.*s = \"%s\",\n",
+                                (int) (prefix_len + uppers_len), *e,
+                                *e + prefix_len + uppers_len + 1);
+                        }
+                    }
                 }
 #else
                 PerlIO_printf(Perl_error_log,
@@ -3224,15 +3236,9 @@ Perl__is_cur_LC_category_utf8(pTHX_ int category)
 
 #ifdef WIN32
     /* http://msdn.microsoft.com/en-us/library/windows/desktop/dd317756.aspx */
-    if (final_pos >= 4
-        && *(save_input_locale + final_pos - 0) == '1'
-        && *(save_input_locale + final_pos - 1) == '0'
-        && *(save_input_locale + final_pos - 2) == '0'
-        && *(save_input_locale + final_pos - 3) == '5'
-        && *(save_input_locale + final_pos - 4) == '6')
-    {
+    if (memENDs(save_input_locale, final_pos, "65001")) {
         DEBUG_L(PerlIO_printf(Perl_debug_log,
-                        "Locale %s ends with 10056 in name, is UTF-8 locale\n",
+                        "Locale %s ends with 65001 in name, is UTF-8 locale\n",
                         save_input_locale));
         Safefree(save_input_locale);
         return TRUE;
