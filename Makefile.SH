@@ -1177,53 +1177,55 @@ EOT
 done
 
 if test "X$hostperl" != X; then
+	LOCAL_PERL='$(HOST_PERL)'
 	$spitshell >>$Makefile <<'!NO!SUBS!'
 install.perl:	$(INSTALL_DEPENDENCE) installperl
 	$(HOST_PERL) installperl --destdir=$(DESTDIR) $(INSTALLFLAGS) $(STRIPFLAGS)
 	-@test ! -s extras.lst || $(MAKE) extras.install
-
-install.man:	all installman
-	$(HOST_PERL) installman --destdir=$(DESTDIR) $(INSTALLFLAGS)
-
-# XXX Experimental. Hardwired values, but useful for testing.
-# Eventually Configure could ask for some of these values.
-install.html: all installhtml
-	-@test -f README.vms && cd vms && $(LNS) ../README.vms README_vms.pod && cd ..
-	$(HOST_PERL) installhtml   \
-      --podroot=. --podpath=. --recurse  \
-      --htmldir=$(privlib)/html   \
-      --htmlroot=$(privlib)/html  \
-      --splithead=pod/perlipc     \
-      --splititem=pod/perlfunc    \
-      --ignore=Porting/Maintainers.pm,Porting/pumpkin.pod,Porting/repository.pod \
-      --verbose
 !NO!SUBS!
 else
+	LOCAL_PERL='$(RUN_PERL)'
 	$spitshell >>$Makefile <<'!NO!SUBS!'
 install.perl:	$(INSTALL_DEPENDENCE) installperl
 	$(RUN_PERL) installperl --destdir=$(DESTDIR) $(INSTALLFLAGS) $(STRIPFLAGS)
 	-@test ! -s extras.lst || PATH="`pwd`:\${PATH}" PERL5LIB="`pwd`/lib" \$(RUN_PERL) -Ilib -MCPAN -e '@ARGV&&install(@ARGV)' `cat extras.lst`
 
+!NO!SUBS!
+fi
+
+# installdocs: any other value than 0 will enable the install.man and install.html targets
+if test "X$installdocs" = "X0"; then
+	# disable install.man and install.html targets when specified
+	$spitshell >>$Makefile <<'!NO!SUBS!'
+install.man:
+	@echo "install.man target is disabled by Configure '-Dinstalldocs=0' option"
+
+install.html:
+	@echo "install.html target is disabled by Configure '-Dinstalldocs=0' option"
+
+!NO!SUBS!
+else
+	$spitshell >>$Makefile <<!GROK!THIS!
 install.man:	all installman
-	$(RUN_PERL) installman --destdir=$(DESTDIR) $(INSTALLFLAGS)
+	${LOCAL_PERL} installman --destdir=\$(DESTDIR) \$(INSTALLFLAGS)
 
 # XXX Experimental. Hardwired values, but useful for testing.
 # Eventually Configure could ask for some of these values.
 install.html: all installhtml
-	-@test -f README.vms && cd vms && $(LNS) ../README.vms README_vms.pod && cd ..
-	$(RUN_PERL) installhtml   \
-      --podroot=. --podpath=. --recurse  \
-      --htmldir=$(privlib)/html   \
-      --htmlroot=$(privlib)/html  \
-      --splithead=pod/perlipc     \
-      --splititem=pod/perlfunc    \
-      --ignore=Porting/Maintainers.pm,Porting/pumpkin.pod,Porting/repository.pod \
+	-@test -f README.vms && cd vms && \$(LNS) ../README.vms README_vms.pod && cd ..
+	${LOCAL_PERL} installhtml   \\
+      --podroot=. --podpath=. --recurse  \\
+      --htmldir=\$(privlib)/html   \\
+      --htmlroot=\$(privlib)/html  \\
+      --splithead=pod/perlipc     \\
+      --splititem=pod/perlfunc    \\
+      --ignore=Porting/Maintainers.pm,Porting/pumpkin.pod,Porting/repository.pod \\
       --verbose
-!NO!SUBS!
+
+!GROK!THIS!
 fi
 
 $spitshell >>$Makefile <<'!NO!SUBS!'
-
 # I now supply perly.c with the kits, so the following section is
 # used only if you force bison to run by saying
 # 	make regen_perly
