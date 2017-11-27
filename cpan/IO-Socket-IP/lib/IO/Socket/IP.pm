@@ -14,8 +14,6 @@ use strict;
 use warnings;
 use base qw( IO::Socket );
 
-use Carp;
-
 use Socket 1.97 qw(
    getaddrinfo getnameinfo
    sockaddr_family
@@ -30,13 +28,14 @@ use Socket 1.97 qw(
 );
 my $AF_INET6 = eval { Socket::AF_INET6() }; # may not be defined
 my $AI_ADDRCONFIG = eval { Socket::AI_ADDRCONFIG() } || 0;
-use POSIX qw( dup2 );
 use Errno qw( EINVAL EINPROGRESS EISCONN ENOTCONN ETIMEDOUT EWOULDBLOCK EOPNOTSUPP );
 
 use constant HAVE_MSWIN32 => ( $^O eq "MSWin32" );
 
 # At least one OS (Android) is known not to have getprotobyname()
 use constant HAVE_GETPROTOBYNAME => defined eval { getprotobyname( "tcp" ) };
+
+sub croak($) { require Carp; Carp::croak(@_) }
 
 my $IPv6_re = do {
    # translation of RFC 3986 3.2.2 ABNF to re
@@ -949,13 +948,16 @@ sub socket :method
    # I hate core prototypes sometimes...
    socket( my $tmph, $_[0], $_[1], $_[2] ) or return undef;
 
-   dup2( $tmph->fileno, $self->fileno ) or die "Unable to dup2 $tmph onto $self - $!";
+   if ($tmph->fileno != $self->fileno) {
+     require Cpanel::POSIX::Tiny unless $INC{'Cpanel/POSIX/Tiny.pm'};
+     Cpanel::POSIX::Tiny::dup2( $tmph->fileno, $self->fileno ) or die "Unable to dup2 $tmph onto $self - $!";
+   }
 }
 
 # Versions of IO::Socket before 1.35 may leave socktype undef if from, say, an
 #   ->fdopen call. In this case we'll apply a fix
 BEGIN {
-   if( eval($IO::Socket::VERSION) < 1.35 ) {
+    if( eval($IO::Socket::VERSION) < 1.35 ) {
       *socktype = sub {
          my $self = shift;
          my $type = $self->SUPER::socktype;

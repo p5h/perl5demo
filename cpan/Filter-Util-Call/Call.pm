@@ -59,7 +59,7 @@ sub filter_add($)
     Filter::Util::Call::real_import($obj, (caller)[0], $coderef) ;
 }
 
-bootstrap Filter::Util::Call ;
+XSLoader::load( 'Filter::Util::Call', $VERSION );
 
 1;
 __END__

@@ -200,6 +200,152 @@ Perl_safesysmalloc(MEM_SIZE size)
     return ptr;
 }
 
+/*
+	do a basic search in PL_static_shared_memory_table to guess
+	the size of the element hold by a pointer between
+	PL_static_shared_memory_position->from and PL_static_shared_memory_position->to
+	positions.
+
+	Note that the caller is responsible for checking that we are in this ranger earlier.
+	( view Perl_bc_safesysrealloc )
+
+    return value:
+        0: when cannot find the size malloc for that pointer
+        MEM_SIZE > 0: when you can find the size of the element pointing to
+
+*/
+MEM_SIZE
+_get_size_for_shared_memory_pointer( Malloc_t search ) {
+    int first, last, middle;
+
+    /* initialize our variables */
+    first = 0;
+    /* we stole the size here to store the number of entries in PL_static_shared_memory_table */
+    last  = (int) PL_static_shared_memory_position->size;
+
+    /* use a relative memory address to the first entry */
+    search = search - PL_static_shared_memory_position->from;
+
+    /* while element not found
+        and we still have something to search (at least one entry in the array)
+    */
+    while( first <= last ) {
+            /* we always start looking from the middle */
+            middle = (first+last) / 2;
+            /* check if the current element in middle is the one we are looking foŕ */
+            if( PL_static_shared_memory_table[middle].from <= search
+                && search < PL_static_shared_memory_table[middle].to ) {
+#ifdef DEBUG_NEWXZ
+                /* extra safety / checks for debugging */
+                int delta = search - PL_static_shared_memory_table[middle].from;
+                int modulo = delta % PL_static_shared_memory_table[middle].size;
+                if ( modulo == 0 ) { /* need to point to the beginning of the struct */
+                    return PL_static_shared_memory_table[middle].size;
+                }
+                /* otherwise we are inside a pointer not malloced by us: there is something wrong ? */
+                return 0;
+#else
+                /* no strings there: just trust that we are pointing at the beginning of a struct */
+                return PL_static_shared_memory_table[middle].size;
+#endif
+            }
+            else
+            {  /* let's check which side of the table we should investigate */
+                if ( search < PL_static_shared_memory_table[middle].from )
+                    last = middle - 1; /* look on the left side */
+                else
+                    first = middle + 1; /* look on the right side */
+            }
+    }
+
+    return 0; /* size of 0 means we have not found it */
+}
+
+/* B::C wrapper around Perl_safesysrealloc */
+Malloc_t
+Perl_bc_safesysrealloc(Malloc_t where, MEM_SIZE size) {
+    /* check if we are in the range of the static shared memory pointers declared */
+	if ( LIKELY( !PL_static_shared_memory_table || !PL_static_shared_memory_position
+		|| where > PL_static_shared_memory_position->to /* check to first as it's most likely to be true */
+		|| where < PL_static_shared_memory_position->from
+		)
+	) {
+		return Perl_safesysrealloc(where, size);
+	} else {
+		MEM_SIZE oldsize = _get_size_for_shared_memory_pointer( where );
+		if ( oldsize ) {
+			Malloc_t newmem;
+			if ( size == 0 ) return NULL; /* nothing to free there return a NULL pointer */
+			Newxz(newmem, size, char); /* malloc a new memory pointer */
+            /* we do not want to do a free there ! the memory is static */
+			if ( oldsize > size ) oldsize = size; /* shrink memory (get the min) */
+			Copy(where, newmem, oldsize, char);
+			return newmem;
+		}
+	}
+
+	/* fallback to safesysrealloc */
+	return Perl_safesysrealloc(where, size);
+}
+
+/* used by B::C to declare static memory blocks */
+/*
+* sample usages:
+*	- DeclareStaticMemory( (Malloc_t) &sv_list[0], (Malloc_t) &sv_list[1234],  sizeof(sv_list[0]) ); // sv_list
+*   - DeclareStaticMemory( (Malloc_t) &gv_list[0], (Malloc_t) &gv_list[45647], sizeof(gv_list[0]) ); // gv_list
+*   ...
+*/
+void DeclareStaticMemory( Malloc_t from, Malloc_t to, MEM_SIZE size ) {
+	STATIC_MEMORY_AREA *static_p = 0; /* pointer to our static memor */
+
+	/* malloc one static_memory struct entry */
+	Newx(static_p, 1, STATIC_MEMORY_AREA);
+
+	/* save our declaration to the struct object */
+	static_p->from 	= from;
+	static_p->to 	= to;
+	static_p->size 	= size;
+
+	/* save min & max to quickly check if we are in the static range */
+	/* minimal FROM value: speedup for first range check */
+	if ( ! PL_static_memory_from || (unsigned long) from < (unsigned long) PL_static_memory_from ) {
+		PL_static_memory_from = from;
+	}
+
+	/* max TO value: speedup for first range check */
+	if ( ! PL_static_memory_to || (unsigned long) to > (unsigned long) PL_static_memory_to ) {
+		PL_static_memory_to = to;
+	}
+
+	/* move our struct first in the global linked list */
+	static_p->next 	= PL_static_memory_buffer; /* very first is initialize to 0 */
+	PL_static_memory_buffer = static_p;
+
+}
+
+/* check if we know that memory as being static: if so return the STATIC_MEMORY_AREA pointer with data */
+STATIC_MEMORY_AREA *
+_check_static_memory_address(Malloc_t where) {
+    /* no free when memory is in static known territory */
+    if (UNLIKELY( PL_static_memory_from && where &&
+			PTR2UV(PL_static_memory_from) <= PTR2UV(where) && PTR2UV(where) <= PTR2UV(PL_static_memory_to))
+		) {
+		/* investigate: maybe this extra deep check is not required... ??? */
+		/* we know we are in the main static range, for safety purpose double check that we can find it somewhere */
+		STATIC_MEMORY_AREA *static_p = PL_static_memory_buffer;
+		while (static_p) {
+			if (PTR2UV(static_p->from) <= PTR2UV(where) && PTR2UV(where) <= PTR2UV(static_p->to) ) {
+				/* no free there we know this place */
+				return static_p;
+			}
+			/* check the next */
+			static_p = static_p->next;
+		}
+    }
+
+    return 0;
+}
+
 /* paranoid version of system's realloc() */
 
 Malloc_t
@@ -268,7 +414,17 @@ Perl_safesysrealloc(Malloc_t where,MEM_SIZE size)
 	    abort();
 	}
 #else
-	ptr = (Malloc_t)PerlMem_realloc(where,size);
+	{
+		STATIC_MEMORY_AREA *static_p = _check_static_memory_address(where);
+		if ( static_p && static_p->size ) {
+			/* when the memory is a static address, alloc a new block of memory and copy the previous content to it */
+			ptr = safesysmalloc(size);
+			Copy(where,ptr,static_p->size < size ? static_p->size : size,char);
+		} else {
+			ptr = (Malloc_t)PerlMem_realloc(where,size);
+		}
+	}
+
 #endif
 	PERL_ALLOC_CHECK(ptr);
 
@@ -331,6 +487,12 @@ Perl_safesysfree(Malloc_t where)
     dTHX;
 #endif
     DEBUG_m( PerlIO_printf(Perl_debug_log, "0x%" UVxf ": (%05ld) free\n",PTR2UV(where),(long)PL_an++));
+
+    /* no free when memory is in static known territory */
+    /* PL_static_memory_from is not necessary but avoid a function call when not necessary */
+    if ( PL_static_memory_from && _check_static_memory_address(where) )
+		return;
+
     if (where) {
 #ifdef USE_MDH
 	Malloc_t where_intrn = (Malloc_t)((char*)where-PERL_MEMORY_DEBUG_HEADER_SIZE);
@@ -5318,7 +5480,7 @@ Perl_xs_handshake(const U32 key, void * v_my_perl, const char * file, ...)
 
     got = INT2PTR(void*, (UV)(key & HSm_KEY_MATCH));
     need = (void *)(HS_KEY(FALSE, FALSE, "", "") & HSm_KEY_MATCH);
-    if (UNLIKELY(got != need))
+    if (0 && UNLIKELY(got != need)) /* disable xs_handshake */
 	goto bad_handshake;
 /* try to catch where a 2nd threaded perl interp DLL is loaded into a process
    by a XS DLL compiled against the wrong interl DLL b/c of bad @INC, and the
@@ -5342,7 +5504,7 @@ Perl_xs_handshake(const U32 key, void * v_my_perl, const char * file, ...)
     got = xs_spp;
     need = &PL_stack_sp;
 #endif
-    if(UNLIKELY(got != need)) {
+    if(0 && UNLIKELY(got != need)) { /* disable XS handshake to avoid to rebuild all our XS modules */
 	bad_handshake:/* recycle branch and string from above */
 	if(got != (void *)HSf_NOCHK)
 	    noperl_die("%s: loadable library and perl binaries are mismatched"

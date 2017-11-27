@@ -26,6 +26,7 @@
 
 /* Hide global symbols */
 
+#define DeclareStaticMemory    Perl_DeclareStaticMemory
 #define Gv_AMupdate(a,b)	Perl_Gv_AMupdate(aTHX_ a,b)
 #define _force_out_malformed_utf8_message(a,b,c,d)	Perl__force_out_malformed_utf8_message(aTHX_ a,b,c,d)
 #define _is_uni_FOO(a,b)	Perl__is_uni_FOO(aTHX_ a,b)
@@ -66,6 +67,7 @@
 #define av_top_index(a)		S_av_top_index(aTHX_ a)
 #define av_undef(a)		Perl_av_undef(aTHX_ a)
 #define av_unshift(a,b)		Perl_av_unshift(aTHX_ a,b)
+#define bc_safesysrealloc	Perl_bc_safesysrealloc
 #define block_end(a,b)		Perl_block_end(aTHX_ a,b)
 #define block_gimme()		Perl_block_gimme(aTHX)
 #define block_start(a)		Perl_block_start(aTHX_ a)
