@@ -1,0 +1,15 @@
+version: 5.27.0.{build}
+install:
+build_script:
+- cmd: >-
+    set path=%path:C:\Program Files\Git\usr\bin=%
+
+    set path=%path%;C:\MinGW\bin;C:\Cygwin\bin
+
+    gcc -v
+
+    cd win32
+    
+    mingw32-make INST_TOP=C:\perl-blead CCHOME=C:\MinGW
+    
+    mingw32-make test

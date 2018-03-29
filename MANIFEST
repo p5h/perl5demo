@@ -6,6 +6,7 @@ amigaos4/amigaio.h	AmigaOS4 port
 amigaos4/amigaos.c	AmigaOS4 port
 amigaos4/amigaos.h	AmigaOS4 port
 amigaos4/config.sh	AmigaOS4 config
+appveyor.yml		continous integration for Windows on github (where enabled)
 Artistic		The "Artistic License"
 asan_ignore		Errors to skip under clang's Addresss Sanitizer
 AUTHORS			Contact info for contributors
